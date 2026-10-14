@@ -19,6 +19,7 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   const require = createRequire(import.meta.url);
   let module, registered;
   runInNewContext(await readFile(new URL('../lib/client.js', import.meta.url), 'utf8'), {
+    Response,
     window: { __ModuleLoader__: { load({ id, factory }) {
       assert.equal(id, 'dsh-multi-router');
       module = factory(name => {
@@ -32,4 +33,8 @@ test('client bundle loads in the real DSH classic-script module loader and regis
     register(options, component) { registered = { options, component }; } } });
   assert.equal(registered.options.key, 'dsh-multi-router');
   assert.equal(registered.component, module.RouterPage);
+  await assert.rejects(module.readManagementResponse(new Response('', { status: 404 })), /插件后台未就绪（HTTP 404）/);
+  await assert.rejects(module.readManagementResponse(new Response('<html>Not found</html>', { status: 503 })), /插件后台未就绪（HTTP 503）/);
+  await assert.rejects(module.readManagementResponse(Response.json({ error: '配置冲突' }, { status: 409 })), /配置冲突/);
+  assert.equal((await module.readManagementResponse(Response.json({ revision: 'test', accounts: [] }))).revision, 'test');
 });

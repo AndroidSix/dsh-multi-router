@@ -3,7 +3,7 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { resolveRetryPolicy, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm';
 import { join, resolve } from 'node:path';
 import { createWorkBuddyAdapter } from '../upstream/workbuddy/src/adapter.ts';
-import { readConfig, PROVIDERS, PROVIDER_NAMES } from './config.mjs';
+import { ensureConfig, PROVIDERS, PROVIDER_NAMES } from './config.mjs';
 import { createAccountClient } from './clients.mjs';
 import { Router, abortable } from './router.mjs';
 import { createShim } from './shim.mjs';
@@ -24,7 +24,7 @@ export async function apply(ctx, options = {}) {
   });
   const file = resolve(options.configFile ?? process.env.DSH_MULTI_ROUTER_CONFIG ?? defaultConfigFile());
   try {
-    const config = await readConfig(file);
+    const config = await ensureConfig(file);
     if (disposed) return;
     const router = new Router(config, a => createAccountClient(a, manager?.config ?? config, ctx.get('attachments')),
       event => ctx.logger.info('multi-router', JSON.stringify(event)));

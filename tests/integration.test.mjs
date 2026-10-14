@@ -19,6 +19,32 @@ const catalog = () => Response.json({ code: 0, msg: 'ok', data: {
 } });
 const answer = () => new Response('data: {"id":"test","object":"chat.completion.chunk","created":0,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
 
+test('first activation in a fresh home creates private config and a usable management panel', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'router-first-install-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'new-home', 'multi-router', 'router.json');
+  let handler; const disposers = [], adapters = new Map();
+  const effect = cb => disposers.push(cb());
+  const ctx = { get: () => undefined, effect, emit() {}, logger: { info() {}, warn() {}, error() {} },
+    inject(ids, cb) { cb({ effect, webServer: { register(options) { handler = options.handler; return () => {}; } } }); },
+    llm: { registerAdapter(ids, adapter) { adapters.set(ids[0], adapter); return () => adapters.delete(ids[0]); } } };
+  t.after(async () => { for (const dispose of disposers.reverse()) await dispose?.(); });
+  await apply(ctx, { configFile: file });
+  assert.equal(adapters.size, 7);
+  assert.equal(typeof handler, 'function');
+  let status, body;
+  await handler({ method: 'GET', headers: { host: 'localhost' }, socket: { remoteAddress: '127.0.0.1' } },
+    { writeHead(code) { status = code; }, end(text) { body = JSON.parse(text); } });
+  assert.equal(status, 200);
+  assert.deepEqual(body.accounts, []);
+  assert.equal(body.routes.length, Object.keys(ROUTE_PRESETS).length);
+  const raw = JSON.parse(await readFile(file, 'utf8'));
+  assert.deepEqual(raw.accounts, []);
+  assert.deepEqual(Object.keys(raw.routes), Object.keys(ROUTE_PRESETS));
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.equal((await stat(join(dir, 'new-home', 'multi-router'))).mode & 0o777, 0o700);
+});
+
 test('real DSH adapter streams through WorkBuddy account failover and unregisters', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'multi-router-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

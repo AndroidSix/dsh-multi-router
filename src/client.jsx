@@ -2,6 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 export const name = 'dsh-multi-router-client';
 export const inject = ['slots'];
 const ENDPOINT = '/.well-known/dsh-multi-router';
+export async function readManagementResponse(res) {
+  let next;
+  try { next = JSON.parse(await res.text()); } catch {
+    throw Error(`插件后台未就绪（HTTP ${res.status}）。请检查插件组件的启用错误，更新插件后完全退出并重启 DSH。`);
+  }
+  if (!next || typeof next !== 'object' || Array.isArray(next)) throw Error('插件后台返回了无效数据，请刷新面板或重启 DSH。');
+  if (!res.ok) throw Error(next.error || `操作失败（HTTP ${res.status}）`);
+  return next;
+}
 const fmt = n => typeof n === 'number' ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(n) : '—';
 const when = n => n ? new Date(n).toLocaleString('zh-CN', { hour12: false }) : '尚未获取';
 const strategies = { failover: '故障切换', weighted: '按权重分配', tokens: '按 Token 额度轮换', credits: '按积分消耗轮换' };
@@ -35,7 +44,7 @@ export function RouterPage({ view = 'page' }) {
   const [provider, setProvider] = useState('workbuddy'), [busy, setBusy] = useState(false), [live, setLive] = useState(true);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [draft, setDraft] = useState(null), [accountModal, setAccountModal] = useState(null), [presetModal, setPresetModal] = useState(false), [search, setSearch] = useState('');
   const polling = useRef(false);
-  async function load() { const res = await fetch(ENDPOINT, { cache: 'no-store' }); const next = await res.json(); if (!res.ok) throw Error(next.error || '读取失败'); setData(next); }
+  async function load() { const next = await readManagementResponse(await fetch(ENDPOINT, { cache: 'no-store' })); setData(next); setError(''); }
   useEffect(() => {
     if (view === 'summary') return;
     void load().catch(e => setError(e.message));
@@ -47,7 +56,7 @@ export function RouterPage({ view = 'page' }) {
     if (busy) return false;
     setBusy(true); setError(''); setNotice('');
     try { const res = await fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Multi-Router-Key': data.key }, body: JSON.stringify({ revision: data.revision, ...action }) });
-      const next = await res.json(); if (!res.ok) throw Error(next.error || '操作失败'); const { exported, ...state } = next; setData(state); setNotice(action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
+      const next = await readManagementResponse(res); const { exported, ...state } = next; setData(state); setNotice(action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
     } catch (e) { setError(e.message); return false; } finally { setBusy(false); }
   }
   function openAccount(mode, account) { setError(''); setNotice(''); setAccountModal({ mode, account, revision: data.revision }); }
@@ -59,7 +68,7 @@ export function RouterPage({ view = 'page' }) {
   return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>三家账号与统一路由</h2><p className="muted">连接账号，选择模型，按你的规则自动切换。</p></div><div className="row"><span className="badge">{busy ? '正在处理…' : '本机管理'}</span><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
     <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['models', '模型管理'], ['routes', '路由规则'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
     {!draft && !accountModal && !presetModal && <Feedback error={error} notice={notice} />}
-    {!data ? <p role="status">正在读取账号与用量…</p> : <div className="stack" aria-busy={busy}>
+    {!data ? <p role="status">{error ? '插件后台暂不可用。修复启用错误后点击「刷新面板」。' : '正在读取账号与用量…'}</p> : <div className="stack" aria-busy={busy}>
       {tab === 'overview' && <Overview data={data} live={live} setLive={setLive} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'usage' && <UsageDetails data={data} busy={busy} act={act} />}
       {tab === 'accounts' && <div className="stack"><div className="bar">{providerSelect}<div className="row"><button disabled={busy} onClick={() => { void act({ action: 'monitor.refresh', provider }); }}>刷新登录与用量</button><button className="primary" disabled={busy} onClick={() => openAccount('add')}>添加账号</button></div></div>

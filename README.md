@@ -91,19 +91,31 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 
 ## 安装
 
-### 方式一：DSH 插件页 / CLI 直接安装（推荐）
+### 方式一：GitHub 链接安装（首选）
 
-在 DSH 的 **插件页 → 安装插件**，或命令行执行：
+在 DSH 的 **插件页 → 安装插件** 输入 GitHub 仓库地址：
+
+```text
+https://github.com/AndroidSix/dsh-multi-router
+```
+
+CLI 使用明确的 GitHub 依赖格式：
 
 ```bash
 # Desktop profile
-dsh plugin --profile desktop add AndroidSix/dsh-multi-router
+dsh plugin --profile desktop add github:AndroidSix/dsh-multi-router
 
 # Web profile
-dsh plugin --profile web add AndroidSix/dsh-multi-router
+dsh plugin --profile web add github:AndroidSix/dsh-multi-router
 ```
 
-DSH 会通过 npm/pnpm 的 GitHub 仓库协议拉取本仓库（发布分支已包含编译好的 `lib/`，无需本地构建），并自动写入 bundle patch。安装 / 更新 / 卸载后需**完全重启**对应的 DSH 进程生效。
+默认获取 main 分支；仓库已包含编译好的 `lib/`，安装端无需 clone、构建或运行初始化命令，也没有安装时构建脚本。首次启用自动在当前设备的 DSH 数据目录创建空账号池及预制路由，随后在面板添加账号或导入配置。已有配置不会被覆盖；损坏的配置也不会自动重置。安装 / 更新 / 卸载后需**完全退出并重启**对应的 DSH 进程生效。
+
+已安装用户更新：
+
+```bash
+dsh plugin --profile desktop update dsh-multi-router
+```
 
 Desktop 若提示 CLI 仅安装依赖、未自动启用 bundle：完全退出 Desktop 后，在 desktop profile 的 `package.json` 的 `dsh.profile.bundles` 数组里追加 `"dsh-multi-router"`（保留其他 bundle），再启动并打开配置页。
 
@@ -114,9 +126,10 @@ Desktop 若提示 CLI 仅安装依赖、未自动启用 bundle：完全退出 De
 ```bash
 git clone https://github.com/AndroidSix/dsh-multi-router.git
 cd dsh-multi-router
-npm ci && npm run fetch-upstream && npm run build && npm test
-npm pack
-dsh plugin --profile web add ./dsh-multi-router-0.3.6.tgz
+npm ci
+npm run check
+npm run pack:release
+dsh plugin --profile desktop add ./dsh-multi-router-0.3.7.tgz
 ```
 
 ### 配置账号
@@ -124,13 +137,14 @@ dsh plugin --profile web add ./dsh-multi-router-0.3.6.tgz
 安装后直接在配置面板「账号与登录」添加；也可先用 CLI：
 
 ```bash
-node lib/cli.js init
 node lib/cli.js add --id wb1 --provider workbuddy --source '/path/workbuddy-desktop.info'
 node lib/cli.js add --id tr1 --provider trae --edition cn --source '/path/Trae CN/User/globalStorage/storage.json'
 node lib/cli.js add --id qd1 --provider qoder --source '/path/account-pat.txt'
 ```
 
 默认配置路径：`~/.dsh/multi-router/router.json`。配置文件、凭证权限 0600，凭证目录 0700。普通账号列表、状态响应和路由日志不输出 Token / PAT；仅用户主动提取单账号凭证或加密迁移时返回必要登录信息，不导出 Trae 私钥。
+
+v0.3.6 及之前在新设备可能因 `router.json` 尚不存在而启用失败（ENOENT），面板继而显示 JSON 解析错误。更新到 v0.3.7 后重启即可自动初始化；无需从其他设备复制配置文件。如暂时无法更新，可在该设备已安装的包目录运行 `node lib/cli.js init` 后重启（仅适用于尚无配置的设备）。不要复制旧设备的绝对凭证路径，账号跨设备迁移使用面板「配置迁移」。
 
 管理接口仅接受本机同源请求，写操作需要当前页面取得的随机控制密钥。内部流式接口仅监听随机 127.0.0.1 端口，并由随机密钥认证；它们不是公开 API。
 

@@ -1,6 +1,7 @@
 import { readFile, mkdir, rename, writeFile, chmod } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { REASONING_EFFORTS } from './reasoning.mjs';
 
 export const PROVIDERS = ['workbuddy', 'workbuddy-ai', 'trae', 'trae-global', 'qoder', 'qoder-global'];
@@ -113,6 +114,15 @@ export function validateConfig(raw, file = resolve('router.json')) {
 }
 export async function readConfig(file) {
   return validateConfig(JSON.parse(await readFile(file, 'utf8')), resolve(file));
+}
+export async function ensureConfig(file) {
+  try { return await readConfig(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  return withFileLock(file, async () => {
+    try { return await readConfig(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await writePrivateJson(file, { accounts: [], routes: ROUTE_PRESETS });
+    return readConfig(file);
+  }, { waitMs: 30000 });
 }
 export async function writePrivateJson(file, value) {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
