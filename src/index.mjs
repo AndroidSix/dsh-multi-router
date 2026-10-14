@@ -19,6 +19,7 @@ export async function apply(ctx, options = {}) {
   ctx.effect(() => () => {
     disposed = true; stopWatch?.(); clearInterval(monitorTimer);
     if (manager) manager.closed = true;
+    manager?.plugins.abort.abort();
     for (const release of releases) release();
     return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.telemetry.queue.catch(() => {})]);
   });
@@ -31,9 +32,10 @@ export async function apply(ctx, options = {}) {
     manager = new Manager(file, router, () => {
       for (const wrapper of wrappers) wrapper.invalidate();
       ctx.emit('llm/adapters-updated');
-    });
+    }, { service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext') });
     await manager.load();
     await manager.syncLocalAccounts().catch(() => ctx.logger.warn('multi-router: local login discovery failed; manual import remains available'));
+    await manager.finishInitialSetup().catch(() => ctx.logger.warn('multi-router: first-install guidance could not be saved'));
     if (disposed) return;
     void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
     void manager.monitorAll().catch(() => ctx.logger.warn('multi-router: usage persistence failed'));

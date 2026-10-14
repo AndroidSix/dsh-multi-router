@@ -17,7 +17,19 @@ const router = new Router(validateConfig(raw, file), async a => ({ models: async
   { id: a.provider === 'qoder' ? 'dfmodel' : 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', contextWindow: 200000, maxTokens: 32000 },
   { id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxTokens: 64000 },
 ] }));
-const manager = new Manager(file, router); await manager.load();
+await writePrivateJson(join(dir, 'package.json'), { dependencies: { 'dsh-multi-router': 'github:AndroidSix/dsh-multi-router', 'dsh-git-panel': '^0.1.20', 'dsh-other-plugin': 'next' } });
+const previewBundles = [
+  { name: 'dsh-multi-router', version: '0.3.8', installed: true, removable: true, enabled: true },
+  { name: 'dsh-git-panel', version: '0.1.20', installed: true, removable: true, enabled: true },
+  { name: 'dsh-other-plugin', version: '1.0.0', installed: true, removable: true, enabled: false },
+  { name: '@deepseek-ai/dsh-base', version: '0.2.0-rc.2', installed: false, removable: false, enabled: true },
+];
+const previewService = { listBundles: async () => previewBundles, installBundle: async () => ({ application: 'restart-required', packageResult: { exitCode: 0 } }) };
+const manager = new Manager(file, router, () => {}, { service: () => previewService, profile: () => ({ dir }),
+  lookup: async (s, p, spec) => ({ version: spec.startsWith('dsh-git-panel') ? '0.1.21' : '1.1.0-beta.1' }),
+  fetchImpl: async () => Response.json({ sha: 'a'.repeat(40) }) });
+await manager.load(); await manager.finishInitialSetup();
+manager.localDiscovery = [{ provider: 'workbuddy', state: 'found', savedCount: 2 }, { provider: 'trae', state: 'found', savedCount: 1 }, { provider: 'trae-global', state: 'not-found', savedCount: 0 }];
 await Promise.all(['workbuddy', 'trae', 'qoder'].map(p => manager.ensureCatalog(p)));
 const api = managementHandler(manager);
 const result = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';

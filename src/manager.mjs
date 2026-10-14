@@ -15,6 +15,7 @@ import { qoderOwnAuthPath } from '../upstream/qoder/src/auth.ts';
 import { matchModel } from './router.mjs';
 import { routeReasoning, reasoningModes } from './reasoning.mjs';
 import { exportConfiguration, decodeConfiguration, migrationSummary, prepareMigration } from './migration.mjs';
+import { PluginUpdates } from './plugin-updates.mjs';
 
 export const MANAGEMENT_PATH = '/.well-known/dsh-multi-router';
 const revisionOf = raw => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
@@ -37,12 +38,14 @@ export function modelInfo(row) {
 }
 
 export class Manager {
-  constructor(file, router, onChange = () => {}) {
+  constructor(file, router, onChange = () => {}, pluginAccess = {}) {
     this.file = file; this.router = router; this.onChange = onChange;
     this.catalogFile = join(dirname(file), 'catalogs.json');
     this.catalogs = new Map(); this.catalogErrors = new Map(); this.refreshes = new Map();
     this.closed = false; this.monitorFlights = new Map(); this.loginInfo = new Map();
     this.telemetry = new Telemetry(join(dirname(file), 'usage.json'));
+    this.plugins = new PluginUpdates(pluginAccess);
+    this.setupFile = join(dirname(file), 'initial-setup.json');
     router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a);
     router.prepareFree = () => this.checkFreeModels(true);
     router.freeModels = account => this.freeModels(account);
@@ -50,6 +53,7 @@ export class Manager {
   }
   async load() {
     this.raw = JSON.parse(await readFile(this.file, 'utf8'));
+    try { this.setup = JSON.parse(await readFile(this.setupFile, 'utf8')); } catch { this.setup = undefined; }
     this.config = validateConfig(this.raw, this.file);
     try {
       const saved = JSON.parse(await readFile(this.catalogFile, 'utf8'));
@@ -85,6 +89,7 @@ export class Manager {
         if (this.closed) return;
         let raw = JSON.parse(await readFile(this.file, 'utf8'));
         let changed = false;
+        const saved = new Map();
         for (const item of discovered.accounts) {
           const key = localAccountKey(item.provider, item.document);
           if (!force && raw.ignoredLocalAccounts?.includes(key)) continue;
@@ -95,14 +100,15 @@ export class Manager {
               if (localAccountKey(a.provider, value) === key) { existing = a; current = value; break; }
             } catch { /* Keep unreadable saved accounts; do not replace a different identity. */ }
           }
+          const id = existing?.id ?? `local_${createHash('sha256').update(key).digest('hex').slice(0, 20)}`;
+          const recordSaved = () => { if (!saved.has(item.provider)) saved.set(item.provider, new Set()); saved.get(item.provider).add(id); };
           let sameDevice = true;
           if (existing && item.identityDocument) {
             try { const identity = await jsonCredential(existing.identityFile);
               sameDevice = identity.machineId === item.identityDocument.machineId && identity.deviceId === item.identityDocument.deviceId;
             } catch { sameDevice = false; }
           }
-          if (existing && sameDevice && current.credential.expiresAtMs >= item.document.credential.expiresAtMs) continue;
-          const id = existing?.id ?? `local_${createHash('sha256').update(key).digest('hex').slice(0, 20)}`;
+          if (existing && sameDevice && current.credential.expiresAtMs >= item.document.credential.expiresAtMs) { recordSaved(); continue; }
           const base = join(dirname(this.file), 'accounts'); await mkdir(base, { recursive: true, mode: 0o700 });
           const staging = await mkdtemp(join(base, `${id}-`));
           try {
@@ -117,15 +123,26 @@ export class Manager {
             next.ignoredLocalAccounts = (raw.ignoredLocalAccounts ?? []).filter(k => k !== key);
             validateConfig(next, this.file);
             await writePrivateJson(this.file, next); raw = next; changed = true;
+            recordSaved();
             this.router.clients.delete(id); this.catalogs.delete(id); this.catalogErrors.delete(id);
           } catch (e) { await rm(staging, { recursive: true, force: true });
             this.localDiscovery = this.localDiscovery.map(s => s.provider === item.provider ? { ...s, state: 'unreadable', code: 'import_failed' } : s); }
         }
         if (changed) { this.raw = raw; this.config = validateConfig(raw, this.file);
           await Promise.all(this.config.accounts.map(a => this.readLogin(a))); this.publish(); }
+        this.localDiscovery = this.localDiscovery.map(s => discovered.status.some(d => d.provider === s.provider) ? { ...s, savedCount: saved.get(s.provider)?.size ?? 0 } : s);
       }, { waitMs: 30000 });
     })().finally(() => { this.localScan = undefined; });
     return this.localScan;
+  }
+  async finishInitialSetup() {
+    if (this.setup?.completedAt) return;
+    await withFileLock(this.setupFile, async () => {
+      try { this.setup = JSON.parse(await readFile(this.setupFile, 'utf8')); } catch { /* First installation. */ }
+      if (this.setup?.completedAt) return;
+      this.setup = { completedAt: Date.now(), dismissed: false };
+      await writePrivateJson(this.setupFile, this.setup);
+    });
   }
   async monitorAccount(account) {
     if (this.monitorFlights.has(account.id)) return this.monitorFlights.get(account.id);
@@ -279,7 +296,8 @@ export class Manager {
   }
   state() {
     const status = this.router.status();
-    return { pluginVersion, revision: this.revision, localDiscovery: this.localDiscovery ?? [],
+    return { pluginVersion, revision: this.revision, localDiscovery: this.localDiscovery ?? [], setup: this.setup,
+      pluginUpdates: this.plugins.state(),
       telemetry: this.telemetry.state(),
       accounts: this.config.accounts.map(a => ({ id: a.id, provider: a.provider, name: a.name ?? a.id,
         enabled: a.enabled !== false, status: status.find(s => s.id === a.id),
@@ -297,6 +315,17 @@ export class Manager {
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (typeof input.action === 'string' && input.action.startsWith('plugins.')) {
+      try { await this.plugins.action(input); } catch (e) { bad(e.message); }
+      return this.state();
+    }
+    if (input.action === 'setup.dismiss') {
+      await withFileLock(this.setupFile, async () => {
+        this.setup = { ...this.setup, completedAt: this.setup?.completedAt ?? Date.now(), dismissed: true };
+        await writePrivateJson(this.setupFile, this.setup);
+      });
+      return this.state();
+    }
     if (input.action === 'account.export') {
       if (input.revision !== revisionOf(JSON.parse(await readFile(this.file, 'utf8')))) throw new ManagementError(409, '配置已更新，请刷新后提取凭证');
       const account = this.config.accounts.find(a => a.id === input.id);

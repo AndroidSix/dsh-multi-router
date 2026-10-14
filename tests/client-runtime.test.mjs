@@ -36,6 +36,11 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   assert.match(html, /退出 DeepSeek Harness/);
   assert.match(html, /关闭窗口或刷新面板不会重新加载后台/);
   assert.match(html, /我已重启，重新检查/);
+  const welcome = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.InitialSetup, { data: { providers: [{ id: 'trae', name: 'Trae CN' }], localDiscovery: [{ provider: 'trae', state: 'found', savedCount: 1 }] } }));
+  assert.match(welcome, /已保存 1 个/);
+  assert.match(welcome, /一键获取并保存 WorkBuddy/);
+  const updates = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.PluginUpdatesPanel, { data: { available: true, rows: [{ name: 'other-plugin', version: '1.0.0', enabled: false, source: { kind: 'npm', tag: 'latest' }, status: 'available', latestVersion: '1.1.0' }] } }));
+  assert.match(updates, /other-plugin/); assert.match(updates, /停用/); assert.match(updates, /检查全部更新/);
   module.apply({ slots: { inject(name, fn) { assert.equal(name, 'plugins.bundle.config'); fn(); },
     register(options, component) { registered = { options, component }; } } });
   assert.equal(registered.options.key, 'dsh-multi-router');

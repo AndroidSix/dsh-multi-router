@@ -41,6 +41,10 @@ test('fresh installation automatically captures local WorkBuddy and Trae SOLO lo
   let state;
   await handler({ method: 'GET', headers: { host: 'localhost' }, socket: { remoteAddress: '127.0.0.1' } }, { writeHead() {}, end(text) { state = JSON.parse(text); } });
   assert.equal(state.accounts.length, 2);
+  assert.ok(state.setup.completedAt, 'first-install setup completes before the panel loads');
+  assert.equal(state.setup.dismissed, false);
+  assert.equal(state.localDiscovery.find(s => s.provider === 'workbuddy').savedCount, 1);
+  assert.equal(state.localDiscovery.find(s => s.provider === 'trae').savedCount, 1);
   const post = async (action, input = {}) => {
     let status;
     const { Readable } = await import('node:stream');
@@ -64,6 +68,8 @@ test('fresh installation automatically captures local WorkBuddy and Trae SOLO lo
   assert.equal(state.accounts.some(a => a.id === traeId), false, 'automatic scan respects a removed local account');
   await post('accounts.discover');
   assert.equal(state.accounts.filter(a => a.provider === 'trae').length, 1, 'explicit rescan restores the local account once');
+  await post('setup.dismiss');
+  assert.equal(JSON.parse(await readFile(join(home, 'router', 'initial-setup.json'), 'utf8')).dismissed, true);
   assert.equal(await readFile(storage, 'utf8'), before);
   assert.equal(await readFile(process.env.WORKBUDDY_AUTH_FILE, 'utf8'), wbBefore);
 });

@@ -6,7 +6,7 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.3.8。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.4.0。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
@@ -89,6 +89,21 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 
 账号获取采用官方客户端已有登录文件的只读解析，不修改客户端登录、不复制参考项目代码、不自动签到。手动凭证支持 WorkBuddy / Trae 字段表单、三家凭证 JSON 和 Qoder PAT；凭证格式、区域、Trae 设备身份会校验。已有账号可在详情中「补充 / 更新凭证」，旧副本保留。Qoder 普通网页 Cookie 无法替代 PAT；官方 PAT 指引见 https://docs.qoder.com/cli/authentication 。
 
+## 首次使用与账号自动获取
+
+第一次启用插件时会执行 WorkBuddy / WorkBuddy AI 与 Trae CN / Global / SOLO 的本机登录检测，将找到的有效登录保存为独立账号副本。首页会展示「本机账号自动获取」结果，区分已保存、未登录和无法读取，并提供「一键获取并保存」及手动添加入口；无需先逐个点击添加账号。之后每分钟检测新增登录，重复检测不重复添加，已停用和已删除的账号保持用户选择。Qoder 仍需添加 PAT。
+
+## 所有已安装插件的更新与安装
+
+在本插件配置面板打开 **插件更新**，管理当前 DSH 配置中的全部已安装插件，包括其它插件和已停用插件。首次打开自动检查，后续超过 24 小时重新打开时再检查，也可随时点击「检查全部更新」。
+
+- **npm 来源**：比较 SemVer，保留 `latest` / `next` 等频道；固定版本和版本范围在用户确认更新后升级到最新正式版本。查询沿用 DSH 的 registry、网络、认证与镜像回退设置。
+- **GitHub 来源**：比较原分支 / 标签的 Git 提交，版本号未变化也能发现更新。支持 `github:用户/仓库`、GitHub HTTPS / SSH 地址及锁文件中的提交；固定 Git 提交不自动解除。GitHub 查询需要能够访问仓库公开元数据，私有仓库或限流会显示原因，不会猜测最新提交。
+- 可按名称、来源和可更新状态筛选；支持单个更新、勾选批量更新、取消以及失败后重试。更新前显示目标，并保留每个插件原有启用 / 停用状态。
+- 可直接输入 npm 包名 / 指定版本，或 `github:用户/仓库` 安装新插件。实际安装由 DSH 官方插件管理服务执行兼容检查、镜像重试、配置锁及失败回滚；依赖构建脚本仍在 DSH 原安装页授权，不自动绕过。
+- 结果显示实际安装是否成功及是否需要重启。npm 镜像尚未同步、网络超时、版本不兼容会明确提示。GitHub 下载不会由 npm 镜像代替。
+- DSH 自带组件也在清单中展示，标记为随 DSH 应用升级；本地文件 / 开发链接标记为原方式更新。不同 DSH 配置之间相互独立，只操作当前配置。
+
 ## 安装
 
 ### 方式一：npm 安装（首选）
@@ -109,7 +124,7 @@ dsh plugin --profile desktop add dsh-multi-router
 dsh plugin --profile web add dsh-multi-router
 ```
 
-包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.3.8`。
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.4.0`。
 
 已使用 npm 来源的用户更新：
 
@@ -166,7 +181,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.3.8.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.4.0.tgz
 ```
 
 ### 配置账号
