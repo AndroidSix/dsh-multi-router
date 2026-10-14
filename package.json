@@ -1,7 +1,10 @@
 {
   "name": "dsh-multi-router",
-  "version": "0.3.7",
-  "repository": { "type": "git", "url": "https://github.com/AndroidSix/dsh-multi-router.git" },
+  "version": "0.3.8",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AndroidSix/dsh-multi-router.git"
+  },
   "description": "Multi-account WorkBuddy, Trae and Qoder routing for DeepSeek Harness",
   "type": "module",
   "main": "lib/index.js",
@@ -25,7 +28,8 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "upstream-lock.json",
-    "router.example.json"
+    "router.example.json",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {

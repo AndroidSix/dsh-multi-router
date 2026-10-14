@@ -29,6 +29,13 @@ test('client bundle loads in the real DSH classic-script module loader and regis
     } } },
   });
   assert.equal(typeof module.RouterPage, 'function');
+  assert.equal(module.backendNeedsRestart({ pluginVersion: '0.3.7' }), true);
+  assert.equal(module.backendNeedsRestart({}), true);
+  assert.equal(module.backendNeedsRestart({ pluginVersion: JSON.parse(await readFile(new URL('../package.json', import.meta.url))).version }), false);
+  const html = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.RestartGuidance, { data: { pluginVersion: '0.3.7' } }));
+  assert.match(html, /退出 DeepSeek Harness/);
+  assert.match(html, /关闭窗口或刷新面板不会重新加载后台/);
+  assert.match(html, /我已重启，重新检查/);
   module.apply({ slots: { inject(name, fn) { assert.equal(name, 'plugins.bundle.config'); fn(); },
     register(options, component) { registered = { options, component }; } } });
   assert.equal(registered.options.key, 'dsh-multi-router');

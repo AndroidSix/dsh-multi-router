@@ -1,10 +1,55 @@
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { WorkBuddyCredentialStore } from '../upstream/workbuddy/src/auth.ts';
 import { WORKBUDDY_VARIANTS } from '../upstream/workbuddy/src/variants.ts';
 import { atRestKeyProviderFor } from '../upstream/workbuddy/src/desktop-credential-protection.ts';
 import { TraeCredentialStore } from '../upstream/trae/src/auth.ts';
 import { readTraeIdentity } from '../upstream/trae/src/identity.ts';
 import { PROVIDERS, writePrivateJson } from './config.mjs';
+import { traeStorageCandidates } from '../upstream/trae/src/paths.ts';
+import { regionOfCredential } from '../upstream/trae/src/region.ts';
+
+const localKeyProviders = new Map();
+export const localAccountKey = (provider, document) => JSON.stringify([provider,
+  document.credential?.uid || document.credential?.userId,
+  document.credential?.enterpriseId || '', document.credential?.edition || '']);
+
+// Reuse the upstream readers, including WorkBuddy's environment overrides,
+// candidate fallback and encrypted desktop format. Never refresh/write upstream files.
+export async function discoverLocalAccounts(provider) {
+  const accounts = [], status = [];
+  for (const variant of WORKBUDDY_VARIANTS.filter(v => !provider || v.id === provider)) {
+    try {
+      if (!localKeyProviders.has(variant.id)) localKeyProviders.set(variant.id, atRestKeyProviderFor(variant));
+      const store = new WorkBuddyCredentialStore({ variant, ownPath: join(tmpdir(), `dsh-router-scan-${randomBytes(16).toString('hex')}.json`),
+        keyProvider: localKeyProviders.get(variant.id), refresh: async () => { throw new Error('Discovery cannot refresh'); } });
+      const credential = await store.current();
+      if (credential) accounts.push({ provider: variant.id, document: { version: 1, credential } });
+      status.push({ provider: variant.id, state: credential ? 'found' : 'not-found' });
+    } catch (e) { status.push({ provider: variant.id, state: 'unreadable', code: e.code || 'credential_unreadable' }); }
+  }
+  for (const id of ['trae', 'trae-global'].filter(id => !provider || id === provider)) {
+    let found = false, unreadable = false;
+    for (const candidate of traeStorageCandidates().filter(c => c.source === 'desktop'
+      && (id === 'trae' ? ['cn', 'solo'] : ['sg', 'solo-sg']).includes(c.edition))) {
+      try {
+        await readFile(candidate.path, 'utf8');
+        const store = new TraeCredentialStore({ storagePath: candidate.path, edition: candidate.edition,
+          region: id === 'trae' ? 'cn' : 'ai', ownPath: `${candidate.path}.dsh-router-no-owned-credential`,
+          legacyOwnPath: `${candidate.path}.dsh-router-no-legacy`, refresh: async () => { throw new Error('Discovery cannot refresh'); } });
+        const credential = await store.current();
+        if (!credential) { const diagnostic = await store.diagnose(); unreadable ||= diagnostic.failures.some(f => f.reason !== 'missing'); continue; }
+        if ((regionOfCredential(credential) === 'ai') !== (id === 'trae-global')) continue;
+        const identityDocument = await readTraeIdentity(candidate);
+        accounts.push({ provider: id, document: { version: 1, credential }, identityDocument }); found = true;
+      } catch (e) { if (e.code !== 'ENOENT') unreadable = true; }
+    }
+    status.push({ provider: id, state: found ? 'found' : unreadable ? 'unreadable' : 'not-found' });
+  }
+  return { accounts, status };
+}
 
 const pick = (value, keys) => Object.fromEntries(keys.filter(k => Object.hasOwn(value ?? {}, k)).map(k => [k, value[k]]));
 // Share the same portable fields with full encrypted configuration migration.

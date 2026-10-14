@@ -6,7 +6,7 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.3.7。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.3.8。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
@@ -14,7 +14,7 @@
 
 - **总览与用量**：今日/累计请求与 Token、近 7 日趋势、最近请求、三家平台余额与刷新时间。平台每分钟查询，面板每 15 秒刷新，可暂停面板自动刷新。
 - **Token 明细**：每次上游调用的时间、渠道、账号、路由、实际模型、输入/输出/总 Token 和结果；按账号、路由、结果筛选，每页 50 条。缓存输入和推理输出在平台返回时展示，不重复计入总量。默认滚动保留最近 3 × 24 小时，可设置 1–365 天，并随配置迁移。旧记录缺少的分项显示「—」。
-- **账号与登录**：添加账号弹窗内一键获取 WorkBuddy / Trae 当前官方客户端登录；账号 ID 自动生成、显示名自动识别，重复账号会提示。Qoder 使用 PAT，可粘贴或获取本机旧连接器已保存的 PAT。新账号自动获取模型与平台用量。详情弹窗查看身份、认证类型、有效期、刷新能力、套餐与积分包；账号可命名、启停、排序和移出。
+- **账号与登录**：启动时自动读取本机 WorkBuddy / Trae 已登录账号，每分钟重新检测；Trae 自动识别 CN / Global / SOLO，面板展示检测状态，并提供「重新检测本机登录」。添加账号弹窗也可一键获取；账号 ID 自动生成、显示名自动识别，重复账号会提示。Qoder 使用 PAT，可粘贴或获取本机旧连接器已保存的 PAT。新账号自动获取模型与平台用量。详情弹窗查看身份、认证类型、有效期、刷新能力、套餐与积分包；账号可命名、启停、排序和移出。
 - **模型管理**：原始模型默认隐藏，只展示统一路由；提供所有渠道「全部展示」「全部隐藏（仅路由）」，作用于现有和以后发现的模型。可搜索、获取真实模型目录，修改显示名与单模型展示开关，每家独立保存。
 - **路由规则**：Free 免费路由排在首位，显示各账号当前免费模型与目录检查时间，支持立即检查。列表显示路由名称、切换策略和目标；新建/编辑打开二级弹窗。「添加模型预配置」可逐个添加或补齐全部三家预配置，不覆盖已有同 ID 路由。模型可从下拉列表选择，候选 ID 和上下文长度放在高级选项中。
 
@@ -109,7 +109,7 @@ dsh plugin --profile desktop add github:AndroidSix/dsh-multi-router
 dsh plugin --profile web add github:AndroidSix/dsh-multi-router
 ```
 
-默认获取 main 分支；仓库已包含编译好的 `lib/`，安装端无需 clone、构建或运行初始化命令，也没有安装时构建脚本。首次启用自动在当前设备的 DSH 数据目录创建空账号池及预制路由，随后在面板添加账号或导入配置。已有配置不会被覆盖；损坏的配置也不会自动重置。安装 / 更新 / 卸载后需**完全退出并重启**对应的 DSH 进程生效。
+默认获取 main 分支；仓库已包含编译好的 `lib/`，安装端无需 clone、构建或运行初始化命令，也没有安装时构建脚本。首次启用自动在当前设备的 DSH 数据目录创建配置及预制路由，并读取本机已登录的 WorkBuddy / Trae 账号，无需先手动添加。Qoder 使用 PAT，或读取旧连接器保存的 PAT。凭证只保存独立副本；再次检测不会重复添加，也不会启用已停用账号。移出的本机账号不会被定时扫描重新加入，可点击「重新检测本机登录」主动恢复。已有配置不会被覆盖；损坏的配置也不会自动重置。安装 / 更新 / 卸载后需**完全退出并重启**对应的 DSH 进程生效。
 
 已安装用户更新（也适用于旧版从本地 `.tgz` 安装的用户）：
 
@@ -131,7 +131,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.3.7.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.3.8.tgz
 ```
 
 ### 配置账号
@@ -250,3 +250,11 @@ npm pack --cache /private/tmp/dsh-multi-router-npm-cache
 
 - 代码许可：[MIT](./LICENSE)
 - **使用条款与免责：见 [DISCLAIMER.md](./DISCLAIMER.md)——仅供个人学习研究，与官方无关，按「现状」提供，使用者自担风险。**
+
+## 自动发版到 npm
+
+仓库的 `.github/workflows/publish.yml` 在 GitHub Release 发布时运行：校验 `v版本号` 与 `package.json` / `package-lock.json` 一致 → 安装依赖 → 构建并运行全部回归 → 打包并附加到 GitHub Release → 通过 npm Trusted Publishing 发布。普通提交不触发发布；草稿 Release 也不发布。稳定版本使用 npm `latest`，预发布版本使用 `next`。失败后修复原因，再在 Actions 手动输入已有 tag 重试；已经成功发布的 npm 版本不能重复发布。
+
+日常更新：修改版本号和更新日志，运行 `npm run check`，提交源码与编译产物，推送 main，然后创建对应 `v0.x.y` 标签的 GitHub Release。CI 的打包白名单不包含本机账号、配置、统计、npm 登录文件。
+
+首次发布需 npm 账号完成双重验证。包的 npm Settings → Trusted Publisher 使用 GitHub Actions，填写组织 / 用户 `AndroidSix`、仓库 `dsh-multi-router`、工作流文件 `publish.yml`，环境名称留空，并允许 `npm publish`。不需要添加 `NPM_TOKEN` GitHub Secret。

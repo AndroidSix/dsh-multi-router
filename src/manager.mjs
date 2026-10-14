@@ -1,14 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, mkdir, mkdtemp, rm, access } from 'node:fs/promises';
+import { version as pluginVersion } from '../package.json';
+import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { PROVIDERS, PROVIDER_NAMES, ROUTE_PRESETS, validateConfig, writePrivateJson, isFreeModel, beijingDay } from './config.mjs';
 import { modelWithCurrentPromotion } from '../upstream/workbuddy/src/upstream.ts';
-import { importAccount, readPortableCredential } from './accounts.mjs';
-import { defaultDesktopAuthPath } from '../upstream/workbuddy/src/auth.ts';
-import { WORKBUDDY_VARIANTS } from '../upstream/workbuddy/src/variants.ts';
-import { traeStorageCandidates } from '../upstream/trae/src/paths.ts';
+import { importAccount, readPortableCredential, discoverLocalAccounts, localAccountKey } from './accounts.mjs';
 import { hostIsLoopback } from '../upstream/workbuddy/src/loopback.ts';
 import { Telemetry } from './telemetry.mjs';
 import { jsonCredential } from './clients.mjs';
@@ -75,6 +73,59 @@ export class Manager {
         : { state: !c?.accessToken ? 'missing' : c?.expiresAtMs > Date.now() ? 'valid' : c?.refreshToken ? 'refresh-needed' : 'expired', name: c?.nickname || c?.accountName || c?.uid || c?.userId,
           identity: c?.uid || c?.userId, expiresAt: c?.expiresAtMs, refreshExpiresAt: c?.refreshExpiresAtMs, refreshable: !!c?.refreshToken, kind: '客户端登录态', edition: c?.edition });
     } catch { this.loginInfo.set(account.id, { state: 'missing' }); }
+  }
+  async syncLocalAccounts(provider, force = false) {
+    if (this.localScan) return this.localScan;
+    this.localScan = (async () => {
+      const discovered = await discoverLocalAccounts(provider);
+      this.localDiscovery = [...(this.localDiscovery ?? []).filter(s => !discovered.status.some(n => n.provider === s.provider)),
+        ...discovered.status.map(s => ({ ...s, checkedAt: Date.now() }))];
+      if (this.closed || !discovered.accounts.length) return;
+      await withFileLock(this.file, async () => {
+        if (this.closed) return;
+        let raw = JSON.parse(await readFile(this.file, 'utf8'));
+        let changed = false;
+        for (const item of discovered.accounts) {
+          const key = localAccountKey(item.provider, item.document);
+          if (!force && raw.ignoredLocalAccounts?.includes(key)) continue;
+          const config = validateConfig(raw, this.file);
+          let existing, current;
+          for (const a of config.accounts.filter(a => a.provider === item.provider)) {
+            try { const value = await jsonCredential(a.credentialFile);
+              if (localAccountKey(a.provider, value) === key) { existing = a; current = value; break; }
+            } catch { /* Keep unreadable saved accounts; do not replace a different identity. */ }
+          }
+          let sameDevice = true;
+          if (existing && item.identityDocument) {
+            try { const identity = await jsonCredential(existing.identityFile);
+              sameDevice = identity.machineId === item.identityDocument.machineId && identity.deviceId === item.identityDocument.deviceId;
+            } catch { sameDevice = false; }
+          }
+          if (existing && sameDevice && current.credential.expiresAtMs >= item.document.credential.expiresAtMs) continue;
+          const id = existing?.id ?? `local_${createHash('sha256').update(key).digest('hex').slice(0, 20)}`;
+          const base = join(dirname(this.file), 'accounts'); await mkdir(base, { recursive: true, mode: 0o700 });
+          const staging = await mkdtemp(join(base, `${id}-`));
+          try {
+            const credentialFile = join(staging, 'credential.json'), identityFile = join(staging, 'identity.json');
+            await importAccount({ ...item, credentialFile, identityFile });
+            const paths = { credentialFile: relative(dirname(this.file), credentialFile),
+              ...(item.provider.startsWith('trae') ? { identityFile: relative(dirname(this.file), identityFile) } : {}) };
+            const next = structuredClone(raw);
+            if (existing) Object.assign(next.accounts.find(a => a.id === id), paths);
+            else next.accounts.push({ id, provider: item.provider,
+              name: item.document.credential.nickname || item.document.credential.accountName || item.document.credential.uid || item.document.credential.userId, ...paths });
+            next.ignoredLocalAccounts = (raw.ignoredLocalAccounts ?? []).filter(k => k !== key);
+            validateConfig(next, this.file);
+            await writePrivateJson(this.file, next); raw = next; changed = true;
+            this.router.clients.delete(id); this.catalogs.delete(id); this.catalogErrors.delete(id);
+          } catch (e) { await rm(staging, { recursive: true, force: true });
+            this.localDiscovery = this.localDiscovery.map(s => s.provider === item.provider ? { ...s, state: 'unreadable', code: 'import_failed' } : s); }
+        }
+        if (changed) { this.raw = raw; this.config = validateConfig(raw, this.file);
+          await Promise.all(this.config.accounts.map(a => this.readLogin(a))); this.publish(); }
+      }, { waitMs: 30000 });
+    })().finally(() => { this.localScan = undefined; });
+    return this.localScan;
   }
   async monitorAccount(account) {
     if (this.monitorFlights.has(account.id)) return this.monitorFlights.get(account.id);
@@ -228,7 +279,7 @@ export class Manager {
   }
   state() {
     const status = this.router.status();
-    return { revision: this.revision,
+    return { pluginVersion, revision: this.revision, localDiscovery: this.localDiscovery ?? [],
       telemetry: this.telemetry.state(),
       accounts: this.config.accounts.map(a => ({ id: a.id, provider: a.provider, name: a.name ?? a.id,
         enabled: a.enabled !== false, status: status.find(s => s.id === a.id),
@@ -269,7 +320,13 @@ export class Manager {
     if (input.action === 'monitor.refresh' || input.action === 'account.refresh') {
       if (input.provider && !PROVIDERS.includes(input.provider)) bad('未知供应商');
       if (input.action === 'account.refresh') { const account = this.config.accounts.find(a => a.id === input.id); if (!account) bad('账号不存在'); this.router.clients.delete(account.id); await this.monitorAccount(account); }
-      else await this.monitorAll(input.provider);
+      else { await this.syncLocalAccounts(input.provider); await this.monitorAll(input.provider); }
+      return this.state();
+    }
+    if (input.action === 'accounts.discover') {
+      if (input.provider && !PROVIDERS.includes(input.provider)) bad('未知供应商');
+      await this.syncLocalAccounts(input.provider, true);
+      await Promise.all([this.monitorAll(input.provider), ...this.config.accounts.filter(a => !input.provider || a.provider === input.provider).map(a => this.refreshAccount(a, true))]);
       return this.state();
     }
     if (input.action === 'account.capture') {
@@ -318,18 +375,22 @@ export class Manager {
             await writePrivateJson(credentialFile, { version: 2, pat: input.pat.trim(),
               region: input.provider === 'qoder' ? 'china' : 'global', savedAt: new Date().toISOString() });
           } else {
-            let source = input.source;
-            if (!source && input.provider.startsWith('qoder')) source = qoderOwnAuthPath(QODER_VARIANTS.find(v => v.id === input.provider));
-            if (!source && input.provider.startsWith('workbuddy')) source = defaultDesktopAuthPath(WORKBUDDY_VARIANTS.find(v => v.id === input.provider));
-            if (!source && input.provider.startsWith('trae')) {
-              for (const candidate of traeStorageCandidates().filter(c => c.source === 'desktop' && c.edition === input.edition)) {
-                try { await access(candidate.path); source = candidate.path; break; } catch { /* Try the next official install location. */ }
-              }
+            const source = input.source;
+            if (!source && (input.provider.startsWith('workbuddy') || input.provider.startsWith('trae'))) {
+              const discovered = await discoverLocalAccounts(input.provider);
+              const item = discovered.accounts.find(a => !input.edition || input.edition === 'auto' || a.document.credential.edition === input.edition);
+              if (!item) bad(discovered.status.some(s => s.state === 'unreadable')
+                ? '找到本机登录文件，但凭证或设备身份无法读取。请在官方客户端重新登录后重试，或手动导入凭证。'
+                : '未找到所选区域的本机登录。请先在官方客户端登录，再点击重新检测。');
+              try { await importAccount({ ...item, credentialFile, identityFile }); }
+              catch { bad('本机凭证导入失败，请检查客户端登录状态与设备身份'); }
+            } else {
+              const file = source || (input.provider.startsWith('qoder') ? qoderOwnAuthPath(QODER_VARIANTS.find(v => v.id === input.provider)) : undefined);
+              if (typeof file !== 'string' || !file.trim()) bad('未找到登录文件，请填写来源路径或 Qoder PAT');
+              try { await importAccount({ provider: input.provider, source: resolve(file), credentialFile, identityFile,
+                edition: input.edition, identitySource: input.identity ? resolve(input.identity) : undefined }); }
+              catch { bad('账号导入失败，请检查登录文件、区域、Trae edition 和设备身份'); }
             }
-            if (typeof source !== 'string' || !source.trim()) bad('未找到登录文件，请填写来源路径或 Qoder PAT');
-            try { await importAccount({ provider: input.provider, source: resolve(source), credentialFile, identityFile,
-              edition: input.edition, identitySource: input.identity ? resolve(input.identity) : undefined }); }
-            catch { bad('账号导入失败，请检查登录文件、区域、Trae edition 和设备身份'); }
           }
           const imported = await jsonCredential(credentialFile);
           const fingerprint = value => input.provider.startsWith('qoder') ? value.pat : value.credential?.uid || value.credential?.userId;
@@ -352,6 +413,9 @@ export class Manager {
         } else if (input.action === 'account.remove') {
           if (!account) bad('账号不存在');
           if (Object.values(raw.routes).some(r => r.targets.some(t => t.account === input.id))) bad('请先移除路由中绑定此账号的目标');
+          if (account.provider.startsWith('workbuddy') || account.provider.startsWith('trae')) {
+            try { raw.ignoredLocalAccounts = [...new Set([...(raw.ignoredLocalAccounts ?? []), localAccountKey(account.provider, await jsonCredential(this.config.accounts.find(a => a.id === account.id).credentialFile))])]; } catch {}
+          }
           raw.accounts = raw.accounts.filter(a => a.id !== input.id);
         } else if (input.action === 'models.visibility') {
           if ((input.provider !== undefined && !PROVIDERS.includes(input.provider)) || typeof input.visible !== 'boolean') bad('供应商或展示开关无效');

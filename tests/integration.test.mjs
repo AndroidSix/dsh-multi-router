@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,16 @@ import { importAccount } from '../lib/accounts.js';
 import { createShim } from '../lib/shim.js';
 import { Router } from '../lib/router.js';
 import { validateConfig, writePrivateJson, ROUTE_PRESETS } from '../src/config.mjs';
+
+// Startup discovery must never capture the developer's real desktop accounts.
+const isolatedHome = await mkdtemp(join(tmpdir(), 'router-integration-home-'));
+const savedHome = process.env.HOME;
+process.env.HOME = isolatedHome;
+process.env.APPDATA = join(isolatedHome, 'AppData', 'Roaming');
+process.env.XDG_CONFIG_HOME = join(isolatedHome, '.config');
+process.env.WORKBUDDY_AUTH_FILE = join(isolatedHome, 'missing-wb');
+process.env.WORKBUDDY_AI_AUTH_FILE = join(isolatedHome, 'missing-wb-ai');
+after(async () => { process.env.HOME = savedHome; await rm(isolatedHome, { recursive: true, force: true }); });
 
 const wbCredential = token => ({ version: 1, credential: { accessToken: token, refreshToken: '',
   expiresAtMs: Date.now() + 3600000, domain: 'www.codebuddy.cn', uid: token, source: 'dsh' } });

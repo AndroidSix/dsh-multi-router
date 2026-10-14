@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
+import { version as pluginVersion } from '../package.json';
 export const name = 'dsh-multi-router-client';
 export const inject = ['slots'];
 const ENDPOINT = '/.well-known/dsh-multi-router';
+export const backendNeedsRestart = data => !!data && data.pluginVersion !== pluginVersion;
+export function RestartGuidance({ data, retry }) {
+  return <section className="box stack" role="alert"><h3>需要重新启动 DeepSeek Harness</h3>
+    <p>{data ? `面板版本 ${pluginVersion}，后台版本 ${data.pluginVersion || '旧版'}。更新后的后台尚未重新加载。` : '插件后台尚未启动。若刚安装或更新插件，请完成下面的重启步骤。'}</p>
+    <p>macOS：顶部菜单「DeepSeek Harness → 退出 DeepSeek Harness」（⌘Q），再重新打开应用。<br />Windows：退出托盘中的 DeepSeek Harness，再重新打开。<br />网页版：重启运行 DSH 的服务进程。</p>
+    <p className="notice">关闭窗口或刷新面板不会重新加载后台。重启后会保留账号、路由和用量；如仍提示异常，请查看下方组件的启用错误。</p>
+    <div><button onClick={retry}>我已重启，重新检查</button></div></section>;
+}
 export async function readManagementResponse(res) {
   let next;
   try { next = JSON.parse(await res.text()); } catch {
@@ -53,10 +62,10 @@ export function RouterPage({ view = 'page' }) {
     return () => clearInterval(timer);
   }, [view, live]);
   async function act(action) {
-    if (busy) return false;
+    if (busy || backendNeedsRestart(data)) return false;
     setBusy(true); setError(''); setNotice('');
     try { const res = await fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Multi-Router-Key': data.key }, body: JSON.stringify({ revision: data.revision, ...action }) });
-      const next = await readManagementResponse(res); const { exported, ...state } = next; setData(state); setNotice(action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
+      const next = await readManagementResponse(res); const { exported, ...state } = next; setData(state); setNotice(action.action === 'accounts.discover' || action.action === 'monitor.refresh' ? '已重新检测本机登录并刷新用量；检测结果见下方。' : action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
     } catch (e) { setError(e.message); return false; } finally { setBusy(false); }
   }
   function openAccount(mode, account) { setError(''); setNotice(''); setAccountModal({ mode, account, revision: data.revision }); }
@@ -68,12 +77,14 @@ export function RouterPage({ view = 'page' }) {
   return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>三家账号与统一路由</h2><p className="muted">连接账号，选择模型，按你的规则自动切换。</p></div><div className="row"><span className="badge">{busy ? '正在处理…' : '本机管理'}</span><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
     <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['models', '模型管理'], ['routes', '路由规则'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
     {!draft && !accountModal && !presetModal && <Feedback error={error} notice={notice} />}
-    {!data ? <p role="status">{error ? '插件后台暂不可用。修复启用错误后点击「刷新面板」。' : '正在读取账号与用量…'}</p> : <div className="stack" aria-busy={busy}>
+    {(backendNeedsRestart(data) || (!data && error)) && <RestartGuidance data={data} retry={() => { void load().catch(e => setError(e.message)); }} />}
+    {!data ? <p role="status">{error ? '插件后台暂不可用。修复启用错误后点击「刷新面板」。' : '正在读取账号与用量…'}</p> : <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} disabled={backendNeedsRestart(data)} aria-busy={busy}>
       {tab === 'overview' && <Overview data={data} live={live} setLive={setLive} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'usage' && <UsageDetails data={data} busy={busy} act={act} />}
-      {tab === 'accounts' && <div className="stack"><div className="bar">{providerSelect}<div className="row"><button disabled={busy} onClick={() => { void act({ action: 'monitor.refresh', provider }); }}>刷新登录与用量</button><button className="primary" disabled={busy} onClick={() => openAccount('add')}>添加账号</button></div></div>
-        <p className="steps">添加账号 → 一键读取本机登录，或手动填写凭证 → 保存到账号池。每个账号独立保存，可随时补充或更新凭证。</p>
-        {!accounts.length && <div className="box empty">还没有 {p?.name} 账号。点击「添加账号」开始。</div>}
+      {tab === 'accounts' && <div className="stack"><div className="bar">{providerSelect}<div className="row">{!provider.startsWith('qoder') && <button disabled={busy} onClick={() => { void act({ action: 'accounts.discover', provider }); }}>重新检测本机登录</button>}<button disabled={busy} onClick={() => { void act({ action: 'monitor.refresh', provider }); }}>刷新登录与用量</button><button className="primary" disabled={busy} onClick={() => openAccount('add')}>添加账号</button></div></div>
+        <p className="steps">WorkBuddy 与 Trae 启动时自动读取本机已登录账号，每分钟重新检测；Trae 自动识别 CN、Global 与 SOLO。也可添加手动凭证或导入其它设备账号。各账号保留独立副本。</p>
+        {data.localDiscovery?.filter(s => s.provider === provider).map(s => <p className="notice" key={s.provider}>{s.state === 'found' ? '已发现本机客户端登录。' : s.state === 'unreadable' ? '本机登录文件无法读取。请在官方客户端重新登录后重试，或在「添加账号」中手动填写凭证。' : '未找到本机已登录账号。请先安装并登录对应区域的官方客户端，然后重新检测。'} · {when(s.checkedAt)}</p>)}
+        {!accounts.length && <div className="box empty">{provider.startsWith('qoder') ? 'Qoder 需要添加 PAT，或读取原连接器已保存的 PAT。' : `还没有 ${p?.name} 账号。登录官方客户端后会自动检测，也可点击「添加账号」手动导入。`}</div>}
         <div className="grid">{accounts.map((a, i) => <section className="box stack" key={a.id}><div className="bar"><div><h3>{a.name}</h3><p className="mono muted">{a.id}</p></div><span className="badge">{a.status.cooldowns.length ? '冷却中' : a.enabled ? '已启用' : '已停用'}</span></div>
           <div><p className={a.login?.state === 'valid' ? 'good' : 'muted'}>{loginNames[a.login?.state] || '尚未查询'}</p><p className="notice">{a.login?.name || '点击刷新获取身份'}{a.login?.expiresAt ? ` · 有效至 ${when(a.login.expiresAt)}` : a.login?.kind === 'PAT' ? ' · PAT 有效期由平台管理' : ''}</p></div>
           <div className="bar"><div><small>平台剩余额度</small><h3>{a.usage?.balance?.unlimited ? '不限量' : fmt(a.usage?.balance?.remaining)} {a.usage?.balance?.unit === 'credits' ? '积分' : ''}</h3></div><div><small>本插件累计 Token</small><h3>{fmt(a.usage?.tokens || 0)}</h3></div></div>
@@ -99,7 +110,7 @@ export function RouterPage({ view = 'page' }) {
         <details><summary>全局切换设置</summary><form className="box stack" style={{ marginTop: 16 }} onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); void act({ action: 'options.save', cooldownMs: Number(f.get('cooldown')) * 1000, requestTimeoutMs: Number(f.get('timeout')) * 1000, retryServerErrors: f.has('server') }); }}><div className="grid"><label>失败账号冷却（秒）<input disabled={busy} name="cooldown" type="number" min="1" required defaultValue={data.options.cooldownMs / 1000} /></label><label>请求超时（秒）<input disabled={busy} name="timeout" type="number" min="1" required defaultValue={data.options.requestTimeoutMs / 1000} /></label></div><label className="check"><input disabled={busy} name="server" type="checkbox" defaultChecked={data.options.retryServerErrors} />5xx 和网络错误也切换账号</label><div><button disabled={busy} type="submit">保存设置</button></div></form></details>
       </div>}
       {tab === 'migration' && <MigrationForm data={data} act={act} busy={busy} />}
-    </div>}
+    </fieldset>}
     {draft && <Modal title={draft.previousId ? '编辑路由' : '新建路由'} busy={busy} close={() => setDraft(null)}><RouteForm draft={draft} setDraft={setDraft} data={data} act={act} busy={busy} error={error} notice={notice} /></Modal>}
     {presetModal && <Modal title="模型路由预配置" busy={busy} close={() => setPresetModal(false)}><div className="modal-body stack"><Feedback error={error} notice={notice} /><p className="steps">Free 自动发现各账号的免费模型；其他预配置绑定三家共有模型。已有路由不会被覆盖。</p><div className="grid">{(data.presets || []).map(preset => <section key={preset.id} className="box stack"><div><h3>{preset.name}</h3></div><p className="notice">{preset.freeOnly ? '每天自动检查免费模型，调用前复核零倍率；仅在免费模型间切换。' : `已发现可用渠道：${preset.availableProviders.length} / 3${preset.availableProviders.length < 3 ? ' · 可添加账号或刷新模型目录后使用' : ''}`}</p><button disabled={busy || preset.added} onClick={() => { void act({ action: 'preset.add', id: preset.id }); }}>{preset.added ? '已添加' : '添加此路由'}</button></section>)}</div></div><div className="modal-foot bar"><p className="notice">新增路由可继续编辑名称、账号和切换规则。</p><button className="primary" disabled={busy || !(data.presets || []).some(p => !p.added)} onClick={() => { void act({ action: 'preset.add-all' }); }}>补齐全部预配置</button></div></Modal>}
     {accountModal && <Modal title={accountModal.mode === 'edit' ? '账号登录详情' : accountModal.mode === 'credentials' ? '补充 / 更新账号凭证' : '添加账号与获取登录'} busy={busy} close={() => setAccountModal(null)}><AccountForm modal={accountModal} provider={provider} data={data} busy={busy} act={act} replace={() => openAccount('credentials', accountModal.account)} close={selected => { if (typeof selected === 'string') setProvider(selected); setAccountModal(null); }} error={error} notice={notice} /></Modal>}
@@ -172,7 +183,7 @@ function CredentialTransfer({ account, busy, act }) {
 function CredentialForm({ modal, provider, data, busy, act, close, error, notice }) {
   const replacing = modal.mode === 'credentials';
   const [selected, setSelected] = useState(modal.account?.provider || provider), [mode, setMode] = useState('client'), [localError, setLocalError] = useState(''), [json, setJson] = useState('');
-  const [edition, setEdition] = useState(modal.account?.login?.edition || (selected === 'trae-global' ? 'sg' : 'cn'));
+  const [edition, setEdition] = useState(modal.account?.login?.edition || 'auto');
   const isTrae = selected.startsWith('trae'), isQoder = selected.startsWith('qoder'), global = selected === 'trae-global' || selected === 'workbuddy-ai' || selected === 'qoder-global';
   const field = (label, name, type = 'text', required = true, value) => <label>{label}<input name={name} type={type} autoComplete="off" required={required} defaultValue={value} disabled={busy} /></label>;
   function receiveJson(text) {
@@ -202,9 +213,9 @@ function CredentialForm({ modal, provider, data, busy, act, close, error, notice
       ...(document ? { document, identityDocument } : { source: f.source || undefined, identity: f.identity || undefined }) })) { setJson(''); close(selected); }
   }
   return <form onSubmit={submit}><div className="modal-body stack"><Feedback error={localError || error} notice={notice} />
-    <div className="grid"><label>供应商 / 区域<select disabled={busy || replacing} value={selected} onChange={e => { setSelected(e.target.value); setEdition(e.target.value === 'trae-global' ? 'sg' : 'cn'); setJson(''); setLocalError(''); }}>{data.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>{field('账号名称（可选）', 'name', 'text', false, modal.account?.name)}
-      {isTrae && <label>登录的客户端<select value={edition} disabled={busy} onChange={e => setEdition(e.target.value)}>{(global ? [['sg', 'Trae Global'], ['solo-sg', 'TRAE SOLO Global']] : [['cn', 'Trae CN'], ['solo', 'TRAE SOLO CN']]).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>}</div>
-    <label>凭证添加方式<select disabled={busy} value={mode} onChange={e => { setMode(e.target.value); setJson(''); setLocalError(''); }}><option value="client">一键读取本机登录</option><option value="manual">手动填写{isQoder ? ' PAT' : '凭证'}</option><option value="json">粘贴 / 选择凭证 JSON</option></select></label>
+    <div className="grid"><label>供应商 / 区域<select disabled={busy || replacing} value={selected} onChange={e => { setSelected(e.target.value); setEdition('auto'); setJson(''); setLocalError(''); }}>{data.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>{field('账号名称（可选）', 'name', 'text', false, modal.account?.name)}
+      {isTrae && <label>登录的客户端<select value={edition} disabled={busy} onChange={e => setEdition(e.target.value)}>{(mode === 'client' ? [['auto', '自动识别（推荐）'], ...(global ? [['sg', 'Trae Global'], ['solo-sg', 'TRAE SOLO Global']] : [['cn', 'Trae CN'], ['solo', 'TRAE SOLO CN']])] : global ? [['sg', 'Trae Global'], ['solo-sg', 'TRAE SOLO Global']] : [['cn', 'Trae CN'], ['solo', 'TRAE SOLO CN']]).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>}</div>
+    <label>凭证添加方式<select disabled={busy} value={mode} onChange={e => { setMode(e.target.value); if (e.target.value !== 'client' && edition === 'auto') setEdition(global ? 'sg' : 'cn'); setJson(''); setLocalError(''); }}><option value="client">一键读取本机登录</option><option value="manual">手动填写{isQoder ? ' PAT' : '凭证'}</option><option value="json">粘贴 / 选择凭证 JSON</option></select></label>
     <section className="steps stack"><h3>获取凭证引导</h3>{isQoder ? <p>在对应国内 / 国际站的账号设置中创建 PAT，然后选择「手动填写 PAT」粘贴。已有旧连接器登录时，可一键读取本机保存的 PAT。网页登录 Cookie 不作为 PAT 使用。</p> : <p>1. 在所选区域的官方客户端登录账号。<br />2. 回到本面板，选择「一键读取本机登录」并点击底部按钮。<br />3. 添加另一个账号时，先在客户端切换登录，再重复读取；已添加的账号会保留独立副本。</p>}
       <div className="row">{isQoder ? <><a className="link" href="https://docs.qoder.com/cli/authentication" target="_blank" rel="noreferrer">官方 PAT 获取说明</a>{global && <a className="link" href="https://qoder.com/account/integrations" target="_blank" rel="noreferrer">打开 PAT 管理页</a>}</> : <a className="link" href={isTrae ? (global ? 'https://www.trae.ai/' : 'https://www.trae.cn/') : (global ? 'https://www.codebuddy.ai/' : 'https://www.codebuddy.cn/')} target="_blank" rel="noreferrer">打开官方客户端网站</a>}</div>
       <p className="notice">跨设备已有凭证文件时可选择 JSON；WorkBuddy 需要 accessToken、uid、domain、expiresAtMs；Trae 还需要 userId、edition，以及同账号的 machineId / deviceId。推荐读取客户端或使用加密配置迁移，不需要猜测字段。</p></section>
