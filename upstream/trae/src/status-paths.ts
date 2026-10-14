@@ -1,0 +1,597 @@
+/**
+ * Node-free constants and types shared by the Host and browser halves.
+ * Mirrors the `dsh-workbuddy-connect` status-route pattern so the plugin card
+ * stays consistent with that project's external presentation.
+ */
+import type { TraeRegion } from './region.ts'
+
+/** Plugin-owned usage endpoint consumed by its browser half. */
+export const TRAE_USAGE_PATH = '/plugins/dsh-connect-trae/usage'
+/** Plugin-owned live model refresh endpoint. */
+export const TRAE_MODELS_REFRESH_PATH = '/plugins/dsh-connect-trae/models/refresh'
+/**
+ * Plugin-owned availability probe: POST the model ids to test, get one verdict
+ * per model. Unlike every read-only sibling this route SPENDS quota — a real
+ * (minimal) chat call per model — so it is user-initiated only, and the card
+ * labels the button as consuming a small amount.
+ */
+export const TRAE_MODELS_TEST_PATH = '/plugins/dsh-connect-trae/models/test'
+/** Plugin-owned local account rescan endpoint. */
+export const TRAE_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-trae/accounts/refresh'
+
+/**
+ * General balance of EVERY account in a region, for the composer panel's table.
+ *
+ * Separate from the usage route on purpose: the usage document backs the
+ * 5-minute readout, and multiplying its upstream reads by the account count
+ * would charge a healthy account for something it never looks at — the same
+ * principle that keeps `creditAlternatives` firing only when a balance hits
+ * zero. This one is paid when the panel is actually opened, which is the only
+ * place the table is shown.
+ */
+export const TRAE_ACCOUNT_CREDITS_PATH = '/plugins/dsh-connect-trae/account-credits'
+/**
+ * Per-account status (check-in / credits / subscription) for the account table.
+ *
+ * Each row of the account table reads its OWN state through this route — a CN
+ * row carries its check-in state and balance, an ai row its subscription.
+ * POST with the accountId in the body: one upstream read per account, paid
+ * only when the table is actually shown.
+ */
+export const TRAE_ACCOUNT_STATUS_PATH = '/plugins/dsh-connect-trae/account-status'
+/**
+ * Plugin-owned daily check-in claim endpoint. POST, loopback-only, and the only
+ * route in this plugin that changes upstream account state. The accountId in
+ * the body names WHICH account to claim for, so the button can sit in each
+ * account row.
+ */
+export const TRAE_CHECKIN_PATH = '/plugins/dsh-connect-trae/checkin'
+
+/** Query parameter naming the region a card request addresses. */
+export const TRAE_REGION_PARAM = 'region'
+
+/** Every region, in card tab order. */
+export const TRAE_REGIONS: readonly TraeRegion[] = ['cn', 'ai']
+
+/**
+ * Address one region's status route. The two regions are separate provider
+ * stacks; every card request carries the region whose tab the user is on.
+ */
+export function withTraeRegion(path: string, region: TraeRegion): string {
+  return `${path}?${TRAE_REGION_PARAM}=${region}`
+}
+
+/**
+ * Read the region parameter off a status-route URL. Absent means the domestic
+ * tab (`cn`); a present-but-unknown value returns undefined so the route can
+ * answer 400 instead of guessing.
+ */
+export function regionOfTraeStatusUrl(url: string): TraeRegion | undefined {
+  const at = url.indexOf('?')
+  const value = at === -1 ? null : new URLSearchParams(url.slice(at + 1)).get(TRAE_REGION_PARAM)
+  if (value === null || value === '') return 'cn'
+  return (TRAE_REGIONS as readonly string[]).includes(value) ? value as TraeRegion : undefined
+}
+
+/** One credit pack and its remaining credit. */
+export interface TraeWebCreditAccount {
+  displayDesc: string
+  remain: number
+  size: number
+  /**
+   * When this pack lapses, in epoch milliseconds, taken from the upstream's own
+   * `end_time`. Absent when the upstream reported no usable time (0 / missing),
+   * so a consumer can tell "no date" apart from "1970".
+   */
+  expiresAtMs?: number
+}
+
+/** Credit lapsing inside one horizon, as the card reports it. */
+export interface TraeWebExpiringCredits {
+  /** Sum of the contributing packs' remaining credit. */
+  total: number
+  /** How many packs contribute. */
+  packs: number
+  /** Soonest expiry among them, epoch milliseconds. */
+  earliestExpiresAtMs?: number
+}
+
+/**
+ * Credit at risk, bucketed by how soon it lapses.
+ *
+ * Only present when at least one pack carried a usable `expiresAtMs` — a card
+ * must never read "we were not told when anything expires" as "nothing is
+ * about to lapse".
+ */
+export interface TraeWebCreditExpiry {
+  within24h: TraeWebExpiringCredits
+  within3d: TraeWebExpiringCredits
+  within7d: TraeWebExpiringCredits
+  /** Packs already past their end time but still carrying credit. */
+  expired: TraeWebExpiringCredits
+}
+
+/** Aggregated usage/credit answer rendered by the plugin card. */
+export interface TraeWebCredits {
+  total: number
+  consumed: number
+  available: number
+  workAvailable: number
+  generalAvailable: number
+  accounts: readonly TraeWebCreditAccount[]
+  /**
+   * Credit lapsing soon, for the card's warning banner.
+   *
+   * Derived from the per-pack {@link TraeWebCreditAccount.expiresAtMs} the
+   * `/usage` route already carries, so it costs no extra upstream read.
+   */
+  expiry?: TraeWebCreditExpiry
+}
+
+/** Editable Trae model row rendered by the plugin-owned settings card. */
+export interface TraeWebModel {
+  id: string
+  name: string
+  contextWindow?: number
+  maxTokens?: number
+  input?: ('text' | 'image')[]
+  creditMultiplier?: number
+  reasoningSupported?: boolean
+  reasoning?: {
+    supported: string[]
+    defaultEffort?: string
+  }
+  maxContextWindow?: number
+  /**
+   * Trae's own image-capability flag, as the runtime catalog carries it. The
+   * card renders these rows with their image checkbox already ticked so the
+   * control matches what DSH is actually told (issue #16); absent means the
+   * directory did not declare it, which is not a capability claim either way.
+   */
+  multimodal?: boolean
+  /**
+   * The availability verdict from the one-click test, when this card session
+   * has run one. Absent = not tested. Deliberately NOT persisted with the
+   * settings: it describes one moment on one account, and a stale verdict shown
+   * as current is worse than a blank field.
+   */
+  probe?: TraeModelProbeVerdict
+  /** Upstream's own words for the verdict, when it gave any. */
+  probeDetail?: string
+}
+
+/**
+ * One model's availability verdict from the one-click test.
+ *
+ * `unknown` is a first-class outcome, not a failure: a timeout, a proxy drop or
+ * a throttle says nothing about the model, and reporting it as unusable would
+ * make the user delete a model that works. Only an upstream refusal is negative.
+ */
+export type TraeModelProbeVerdict =
+  | 'available'
+  | 'gated'
+  | 'unsupported'
+  | 'rate_limited'
+  | 'auth'
+  | 'unknown'
+
+/** What the probe route answers with. */
+export interface TraeModelsTestResponse {
+  /** One entry per model tested, in the order they were sent. */
+  results: { id: string; verdict: TraeModelProbeVerdict; detail: string }[]
+  /** Models skipped because the region has no live catalog row for them. */
+  skipped?: string[]
+}
+
+/**
+ * Daily check-in state rendered below the credit stats.
+ *
+ * The two booleans answer DIFFERENT questions and must never be collapsed into
+ * one "done" flag — doing that was a shipped bug (see CHANGELOG 2.3.1):
+ *
+ *  - `checkedIn` is ACCOUNT-level: today's reward pack exists for this account,
+ *    so there is nothing left to claim and the balance already includes it.
+ *  - `didCheckedIn` is DEVICE-level: this MACHINE already spent its one
+ *    check-in for the day, whichever account spent it. The upstream keys it on
+ *    the `x-device-id` in the request and answers it per device, not per
+ *    account (measured 2026-09-26: the same account and Beijing day answered
+ *    `false` with the header omitted, with a synthetic id, and with another
+ *    install's id, and `true` for the device that actually claimed).
+ *
+ * So `didCheckedIn && !checkedIn` is the "switched account" case: the device's
+ * daily check-in is used up, but THIS account was never rewarded. Claiming
+ * again is refused upstream (business code 9095, "该设备今日已参与签到"), so
+ * the card disables the button — but it must say that, not "claimed today".
+ */
+export interface TraeWebCheckin {
+  checkedIn: boolean
+  didCheckedIn: boolean
+  credits: number
+  enabled: boolean
+  extraCredits?: number
+}
+
+/** The claim route's answer, so the card can report a business refusal verbatim. */
+export interface TraeWebCheckinClaim {
+  /** False when the upstream answered a non-zero business code (e.g. 9004). */
+  claimed: boolean
+  /**
+   * True only when THIS ACCOUNT's reward for today already exists, so nothing
+   * was sent upstream. Distinct from {@link TraeWebCheckinClaim.deviceCheckedIn}:
+   * a device that already claimed for another account leaves this false.
+   */
+  alreadyCheckedIn: boolean
+  /**
+   * True when today's check-in was already spent on this DEVICE (by this or
+   * another account), so no claim was sent or the upstream refused it with
+   * 9095. Not an error: it is the truthful answer to "can this account claim
+   * here today?" — no, and the reason is the machine, not the account.
+   */
+  deviceCheckedIn?: boolean
+  code?: number
+  message?: string
+  /** The refreshed check-in state, present whenever the claim path ran. */
+  checkin?: TraeWebCheckin
+}
+
+/** One reward activity rule (name + work/general credits when present). */
+export interface TraeWebActivity {
+  activityId: string
+  enabled: boolean
+  workCredits?: number
+  generalCredits?: number
+}
+
+export interface TraeWebAccount {
+  id: string
+  accountName: string
+  edition: 'cn' | 'sg' | 'solo' | 'solo-sg'
+  /** Routing bucket of this account, derived from its credential. */
+  region: TraeRegion
+  source: 'desktop' | 'dsh' | 'cli'
+  tokenExpiresAtMs: number
+  selected: boolean
+}
+
+/**
+ * The account the Trae desktop app is signed in to right now, when it differs
+ * from the one this plugin is bound to (issue #29).
+ *
+ * Reported on the usage document so the card can offer one-click follow without
+ * an extra round trip; also written back on a POST to the accounts refresh
+ * route when the client confirms it saw the hint. Absent whenever the two
+ * agree or the app is not readable — a healthy document carries no extra
+ * fields and the plugin never bills from this value directly: the FOLLOW is a
+ * settings write of `accounts.<region>`, made by the card or by the host's
+ * follow switch, never a silent rebind here.
+ */
+export interface TraeWebAppLogin {
+  id: string
+  accountName: string
+  edition: 'cn' | 'sg' | 'solo' | 'solo-sg'
+  region: TraeRegion
+}
+
+/**
+ * Another account on this machine that still has credit, surfaced only while
+ * the BOUND account is exhausted (issue #25).
+ *
+ * The account switch is persisted, so a user whose bound account ran out sees
+ * a permanently zeroed card with no explanation. This carries just enough to
+ * name the alternative in the UI — identity plus the two CN credit buckets —
+ * and is only ever produced by a read-only upstream call.
+ */
+/**
+ * One row of the composer panel's account table: the account and its general
+ * balance.
+ *
+ * `generalAvailable` is optional because the host may not expose
+ * `creditsOfAccount` (the table still lists the accounts, with no figure).
+ * WORK credits are deliberately absent: the table's single figure is the
+ * general bucket, the one the SOLO chat actually spends.
+ */
+export interface TraeWebAccountCredit {
+  id: string
+  accountName: string
+  selected: boolean
+  generalAvailable?: number
+}
+
+/**
+ * The per-account state shown inside an account row of the card's table.
+ *
+ * Every locally detected account in a region is rendered as a row; the
+ * interesting per-account facts differ by region, which is why this is a union
+ * of the three surfaces the card previously showed only for the BOUND account:
+ *
+ *  - CN rows carry their own check-in state (Trae keys the daily reward per
+ *    ACCOUNT, and the one-per-device tally per DEVICE, see {@link TraeWebCheckin})
+ *    and their Work/General balances.
+ *  - ai rows carry their own subscription / trial status.
+ *
+ * Each field is optional: a read that fails keeps the row visible (perhaps
+ * without a figure) rather than dropping the account and its switch.
+ */
+export interface TraeWebAccountState {
+  /** The account this state belongs to. */
+  id: string
+  /** CN: today's check-in state of this account (absent for ai rows). */
+  checkin?: TraeWebCheckin
+  /** CN: this account's Work/General balances (absent for ai rows). */
+  credits?: TraeWebCredits
+  /** ai: this account's subscription / trial status (absent for CN rows). */
+  payStatus?: TraeWebPayStatus
+}
+
+export interface TraeWebCreditAlternative {
+  id: string
+  accountName: string
+  edition: TraeWebAccount['edition']
+  workAvailable: number
+  generalAvailable: number
+}
+
+/** One probed candidate path and why it did not yield an account. */
+export interface TraeWebSearchPath {
+  path: string
+  edition: 'cn' | 'sg' | 'solo' | 'solo-sg'
+  source: 'desktop' | 'cli'
+  reason: 'missing' | 'unreadable' | 'invalid'
+  message?: string
+}
+
+/**
+ * Peel ONE `{get(): T}` live reference, the shape DSH 0.1.7 delivers a
+ * volatile-marked settings field as (see {@link unwrapVolatileDeep}).
+ */
+export function unwrapVolatile<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as unknown as { get: () => T }).get()
+  }
+  return value
+}
+
+/**
+ * Deep copy of a value with every `{get(): T}` live reference replaced by the
+ * value it resolves to.
+ *
+ * DSH 0.1.7 hands volatile-marked fields back as live references, and a live
+ * reference is still `typeof === 'object'` — so it passes a naive object check
+ * and every lookup on it is `undefined`. Worse, spreading one (`{ ...ref }`)
+ * does NOT read the field: it produces `{ get: <function> }`. Any merge that
+ * spreads a resolved field to preserve its siblings — the card's "write one
+ * region, keep the other" write, or the account map's spread — would otherwise
+ * DROP every sibling and leak a function into the document.
+ *
+ * Both halves therefore unwrap before touching a resolved field. This lives in
+ * the node-free host↔client bridge because the browser half needs it too.
+ *
+ * Non-reference values are recursed into so a nested volatile field is caught
+ * as well; arrays and objects are rebuilt rather than mutated, so the caller's
+ * value is never touched.
+ */
+export function unwrapVolatileDeep<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value
+  if (typeof (value as { get?: unknown }).get === 'function') {
+    return unwrapVolatileDeep((value as unknown as { get: () => unknown }).get()) as T
+  }
+  if (Array.isArray(value)) return value.map(entry => unwrapVolatileDeep(entry)) as T
+  const source = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(source)) {
+    out[key] = unwrapVolatileDeep(source[key])
+  }
+  return out as T
+}
+
+/**
+ * Read the per-region account selections out of a settings value.
+ *
+ * SHARED because `accounts` now has TWO writers: the card, and the composer
+ * panel's account table (2.14.0). Two writers of one field must use one merge
+ * rule, or they drift — and the rule is not obvious.
+ *
+ * Deep-unwraps first: on DSH 0.1.7 a volatile field arrives as a `{get(): T}`
+ * live reference, which passes the `typeof === 'object'` check and would be
+ * returned as if it were the map. Every lookup on it is then `undefined`, and
+ * the merge (`{ ...configured, [region]: id }`) would spread a reference into
+ * `{get: <function>}` — dropping the other region's selection and leaking a
+ * function into the settings document.
+ */
+export function configuredAccountsOf(configured: unknown): Record<string, string> {
+  const accounts = (unwrapVolatileDeep(configured) as { accounts?: unknown } | undefined)?.accounts
+  return typeof accounts === 'object' && accounts !== null ? accounts as Record<string, string> : {}
+}
+
+/**
+ * Whether the host-side "follow the Trae app's sign-in" switch is on (issue
+ * #29). Absent reads as OFF, so an existing configuration keeps the strict
+ * bind it shipped with and the switch is an opt-in — the same opt-out
+ * semantics as {@link regionEnabledOf}, for the same reason: a config written
+ * before this field existed cannot ask for behavior it never declared.
+ *
+ * Reads the whole settings section (or the bare field); deep-unwraps first
+ * because on DSH 0.1.7 a volatile field arrives as a `{get(): T}` live
+ * reference, whose `typeof === 'object'` would otherwise pass a naive check.
+ */
+export function followAppLoginEnabled(configured: unknown): boolean {
+  return (unwrapVolatileDeep(configured) as { followAppLogin?: unknown } | undefined)?.followAppLogin === true
+}
+
+/**
+ * Build the next `regions` settings value for the card's save. The write
+ * targets ONLY the signed-in account's region slot; every other region's slot
+ * is carried over untouched, so switching accounts never clobbers the other
+ * region's picks. Tolerates any stored shape (absent, non-object) by starting
+ * from an empty document.
+ */
+export function nextRegionSlots<Slot extends object>(
+  regions: unknown,
+  region: TraeRegion,
+  slot: Slot,
+): Record<string, unknown> {
+  // Deep-unwrap first: on DSH 0.1.7 each slot is a `{get(): T}` live reference,
+  // and spreading one produces `{get: <function>}` — dropping every field of
+  // the sibling region it was meant to preserve.
+  const unwrapped = unwrapVolatileDeep(regions)
+  const base = typeof unwrapped === 'object' && unwrapped !== null && !Array.isArray(unwrapped)
+    ? unwrapped as Record<string, unknown>
+    : {}
+  return { ...base, [region]: slot }
+}
+
+/**
+ * Narrow a settings value to the `regions` map. Accepts EITHER the whole
+ * settings section (`{ regions: {...}, ... }`) or the `regions` map itself, and
+ * unwraps the former. This tolerance is deliberate: passing the whole section
+ * where the map was expected was a real shipped bug — the lookup then read
+ * `section['cn']` (absent), so the card's checkbox reported `true` forever and
+ * clicking it appeared to do nothing even though the write succeeded.
+ *
+ * Unwraps live references first: on DSH 0.1.7 the `regions` field arrives as a
+ * `{get(): T}` reference, which passes the `typeof === 'object'` check below
+ * and would otherwise be returned as if it were the map — making every region
+ * read back as absent (and the enabled flag read as "on" forever).
+ */
+function regionsMapOf(value: unknown): Record<string, unknown> {
+  const unwrapped = unwrapVolatileDeep(value)
+  if (typeof unwrapped !== 'object' || unwrapped === null || Array.isArray(unwrapped)) return {}
+  const record = unwrapped as Record<string, unknown>
+  const nested = record['regions']
+  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>
+  }
+  return record
+}
+
+/** One region's stored slot as a plain object; any other shape reads as empty. */
+function regionSlotOf(value: unknown, region: TraeRegion): Record<string, unknown> {
+  const slot = unwrapVolatile(regionsMapOf(value)[region])
+  return typeof slot === 'object' && slot !== null && !Array.isArray(slot)
+    ? slot as Record<string, unknown>
+    : {}
+}
+
+/**
+ * Whether one region's provider is switched on. Opt-out semantics: only an
+ * explicit `false` disables it, so a config written before this switch existed
+ * (and the pre-region-split flat fields, which never carry `enabled`) keep both
+ * providers running exactly as before. The Host reads the same rule through
+ * `regionStateOf`, so card and Host can never disagree about a region's state.
+ *
+ * `value` may be the whole settings section or the `regions` map (see
+ * {@link regionsMapOf}).
+ */
+export function regionEnabledOf(value: unknown, region: TraeRegion): boolean {
+  return regionSlotOf(value, region)['enabled'] !== false
+}
+
+/**
+ * Build the next `regions` settings value for a provider on/off toggle. ONLY
+ * the target region's `enabled` flag changes: every other field of that slot
+ * (its directory, selection, image opt-ins, context budgets) and every other
+ * region's slot are carried over verbatim, so switching a provider off never
+ * discards the user's model picks and switching it back on restores them.
+ *
+ * This is deliberately separate from {@link nextRegionSlots}: that helper
+ * writes a whole slot from a signed-in tab's draft, while this one must work
+ * for a region that is signed OUT — which is precisely the region a user wants
+ * to switch off (no international install, no international account).
+ *
+ * `value` may be the whole settings section or the `regions` map; the RETURN
+ * value is always the `regions` map, i.e. exactly what `settingsScope.set(
+ * 'regions', ...)` needs.
+ */
+export function nextRegionEnabled(
+  value: unknown,
+  region: TraeRegion,
+  enabled: boolean,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, { ...regionSlotOf(value, region), enabled })
+}
+
+/** Subscription status of an international (ai) account, rendered instead of the CN credit packs. */
+export interface TraeWebPayStatus {
+  isDollarUsageBilling: boolean
+  hasPackage: boolean
+  isPayFreshman: boolean
+  inTrial: boolean
+  trialEndTimeMs: number
+  enableSoloLite: boolean
+  enableSoloBuilder: boolean
+  enableSoloCoder: boolean
+  enableSoloWeb: boolean
+  /** Trae's authoritative tier number (`user_pay_identity`); `0` means Free. */
+  payIdentity?: number
+  /** Trae's authoritative tier label (`user_pay_identity_str`), e.g. `Free`. */
+  payIdentityStr?: string
+  fission?: { startTimeMs: number; expireTimeMs: number; maxUsage: number }
+}
+
+/**
+ * Whether Trae's plan identity says this account is on a paying plan.
+ *
+ * `has_package` alone is NOT that question — it reports whether a package
+ * entitlement row exists, and a member can be on a plan without one (issue
+ * #19: a Pro account rendered as "No active package"). Trae spells the plan in
+ * `user_pay_identity_str`, so this reads that field, and only the exact word
+ * `Free` counts as free: an unknown or future tier name is treated as paid,
+ * because claiming "Free" for a tier we simply do not recognise is the more
+ * damaging of the two errors.
+ */
+export function traePlanIsPaid(payIdentityStr: string | undefined): boolean {
+  const tier = payIdentityStr?.trim()
+  return tier !== undefined && tier !== '' && !/^free$/i.test(tier)
+}
+
+/** The JSON document the plugin card renders. */
+export type TraeWebUsage =
+  | { status: 'signed-out'; accounts: readonly TraeWebAccount[]; message?: string; searched?: readonly TraeWebSearchPath[]; enabled?: boolean }
+  | {
+    status: 'signed-in'
+    accountId: string
+    accountName: string
+    tokenExpiresAtMs: number
+    /** Which per-region model directory and selection this account owns. */
+    region: TraeRegion
+    /** Whether this region's provider is currently offered to DSH. */
+    enabled?: boolean
+    accounts: readonly TraeWebAccount[]
+    models: readonly TraeWebModel[]
+    enabledModelIds: readonly string[]
+    rawChat?: {
+      state: 'disabled' | 'unchecked' | 'available' | 'protocol-gated' | 'authentication' | 'credit' | 'rate' | 'transport' | 'server'
+      checkedAtMs?: number
+      status?: number
+    }
+    credits?: TraeWebCredits
+    creditsError?: string
+    /**
+     * Present only when the bound account is out of credit AND another account
+     * on this machine has some (issue #25). The card then offers a one-click
+     * switch instead of leaving a permanently empty panel. Absent in every
+     * other case so a healthy account never pays for the extra read.
+     */
+    alternatives?: readonly TraeWebCreditAlternative[]
+    /**
+     * Present only when the Trae app's CURRENT sign-in differs from the
+     * account this plugin is bound to (issue #29): the card then offers a
+     * one-click follow instead of making the user hunt the account dropdown
+     * after every app-side sign-out. Absent in every other case — a healthy
+     * document costs no extra read beyond the accounts scan the document
+     * already runs.
+     */
+    appLogin?: TraeWebAppLogin
+    /**
+     * Daily check-in state (CN only). Absent on the international region,
+     * whose check-in surface does not exist — probed 2026-09-24: the
+     * `/trae/api/v2/ug/*` family answers 404 on every ai gateway, so the card
+     * shows no claim button there rather than a button that cannot work.
+     */
+    checkin?: TraeWebCheckin
+    checkinError?: string
+    /** Subscription status of an international account (region ai only). */
+    payStatus?: TraeWebPayStatus
+    payStatusError?: string
+  }
+  | { status: 'error'; message: string }

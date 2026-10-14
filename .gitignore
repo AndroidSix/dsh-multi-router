@@ -1,0 +1,23 @@
+# --- 依赖 ---
+node_modules/
+.DS_Store
+
+# --- 发布产物：lib/ 与精简 vendor 的 upstream/ 随发布分支提交。
+#     DSH 插件页/CLI 可直接从 GitHub 安装（无需安装方本地构建）；
+#     upstream/ 为 MIT 合规的 pin 定源码副本（src + 许可/README）。
+#     重建：npm run build；重取上游：npm run fetch-upstream ---
+
+# --- 本地运行时数据与私有材料，绝不提交 ---
+router.json
+accounts/
+.local/
+*.tgz
+*.live.log
+
+# 本机安装/调试记录与截图（含真实账号身份与本机路径，仅本地保留）
+installation-report*.md
+install-baseline*.json
+installed-*.json
+host-probe-result*.json
+ui-*.png
+*.sha256

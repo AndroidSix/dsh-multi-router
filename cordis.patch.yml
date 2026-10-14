@@ -1,0 +1,3 @@
+- insert:
+    - id: llm-multi-router-v2
+      name: dsh-multi-router

@@ -1,0 +1,14 @@
+dsh-qoder-connect — NOTICE
+==========================
+
+Attributions for the upstream sources this project is derived from.
+本仓库代码的两处上游出处：
+
+1. Derived from masknull/dsh-workbuddy-connect (MIT) —
+   the connect-plugin skeleton this project was refactored from.
+   https://github.com/masknull/dsh-workbuddy-connect
+
+2. Qoder transport layer ported from mo-n/dsh-provider-qoder (MIT).
+   https://github.com/mo-n/dsh-provider-qoder
+
+Both upstreams are distributed under the MIT License; see LICENSE.

@@ -1,0 +1,808 @@
+/**
+ * Same-origin usage route for the Trae plugin card: sign-in state and the
+ * read-only usage/credit summary, fetched by the browser half. The route
+ * answers loopback browser requests only and never carries token material.
+ *
+ * Follows the `dsh-workbuddy-connect` status-route pattern so the plugin card
+ * stays consistent with that project's external presentation.
+ *
+ * @module dsh-connect-trae/web-status
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { TraeCredentialStore } from './auth.ts'
+import type { TraeModelInfo } from './catalog.ts'
+import type { TraeUsageClient } from './usage.ts'
+import type { TraeRawDiagnostic } from './raw-diagnostic.ts'
+import type { TraeRegion } from './region.ts'
+import {
+  regionOfTraeStatusUrl,
+  TRAE_ACCOUNT_CREDITS_PATH,
+  TRAE_ACCOUNT_STATUS_PATH,
+  TRAE_ACCOUNTS_REFRESH_PATH,
+  TRAE_CHECKIN_PATH,
+  TRAE_MODELS_REFRESH_PATH,
+  TRAE_MODELS_TEST_PATH,
+  TRAE_USAGE_PATH,
+} from './status-paths.ts'
+import type { TraeWebAccount, TraeWebAccountCredit, TraeWebAccountState, TraeWebAppLogin, TraeWebCheckin, TraeWebCreditAlternative, TraeWebCreditExpiry, TraeWebCredits, TraeWebExpiringCredits, TraeWebUsage, TraeWebPayStatus } from './status-paths.ts'
+import type { TraeCheckinClaim, TraeCheckinStatus } from './usage.ts'
+
+export { TRAE_USAGE_PATH, TRAE_ACCOUNT_CREDITS_PATH } from './status-paths.ts'
+export type { TraeWebUsage } from './status-paths.ts'
+
+/**
+ * The upstream's business code for "该设备今日已参与签到" — this DEVICE already
+ * used today's check-in (measured 2026-09-26 on a CN account whose claim was
+ * refused with exactly this code after an account switch on the same machine).
+ *
+ * It arrives as HTTP 200 with a non-zero `code`, which is why it has to be
+ * matched on the code rather than on the HTTP status: read as a transport
+ * failure it looks like the plugin is broken, when the day is simply spent.
+ */
+const CHECKIN_DEVICE_ALREADY_CLAIMED = 9095
+
+/**
+ * Constructor dependencies. Everything region-specific is addressed by the
+ * region the request names: the two regions are separate provider stacks, so
+ * the card must be served the directory, selection, and credits of the tab the
+ * user is on.
+ */
+export interface TraeUsageRouteOptions {
+  /** The region-scoped credential store backing each region's requests. */
+  store(region: TraeRegion): TraeCredentialStore
+  /** The region-scoped usage client (CN work credits / international pay status). */
+  client(region: TraeRegion): TraeUsageClient
+  /**
+   * CN credit balances of an account OTHER than the bound one, read without
+   * changing which account is bound (issue #25). Optional: when absent the
+   * exhausted-account hint is simply not offered.
+   */
+  creditsOfAccount?(region: TraeRegion, accountId: string): Promise<TraeWebCredits | undefined>
+  /**
+   * Per-account status for one row of the card's account table: CN → check-in
+   * + balances, ai → subscription. Read without changing which account is
+   * bound. Optional: when absent the account rows show no check-in/credits/
+   * subscription figures (the table still lists each account and its switch).
+   */
+  accountStateOf?(region: TraeRegion, accountId: string): Promise<TraeWebAccountState | undefined>
+  /**
+   * Claim today's check-in reward for ONE named account, without moving the
+   * binding. Optional: absent means the per-row claim button is disabled (the
+   * check-in surface simply is not offered).
+   */
+  claimCheckinOf?(region: TraeRegion, accountId: string): Promise<{ claim: TraeCheckinClaim; checkin: TraeCheckinStatus } | undefined>
+  /**
+   * The account the Trae app is signed in to right now, when it differs from
+   * the bound one (issue #29). Optional: absent means the card's follow hint
+   * simply is not offered (a test harness or a host without the store's scan).
+   * Read-only — the HOST never rebinds from this value; the follow is a
+   * settings write, made by the card or by the host's follow switch.
+   */
+  liveLogin?(region: TraeRegion): Promise<TraeWebAppLogin | undefined>
+  /** The requested region's last-refreshed raw directory (one entry per upstream model). */
+  displayModels(region: TraeRegion): readonly TraeModelInfo[]
+  /** The user's model selection in the requested region, stored as model id (= Trae name). */
+  enabledModelIds(region: TraeRegion): readonly string[]
+  /**
+   * Whether the requested region's provider is currently offered to DSH. The
+   * card renders this as the tab's on/off checkbox, so the switch reflects the
+   * committed settings value rather than a local guess.
+   */
+  regionEnabled(region: TraeRegion): boolean
+  /** Re-read one region's live directory from the upstream. */
+  discoverModels?(region: TraeRegion, signal?: AbortSignal): Promise<readonly TraeModelInfo[]>
+  /**
+   * Test the given model ids for availability, one real (minimal) chat call
+   * each. Present only when the region's chat path is wired.
+   */
+  probeModels?(region: TraeRegion, ids: readonly string[]): Promise<{ results: { id: string; verdict: string; detail: string }[]; skipped?: string[] }>
+  /** Raw-Chat capability state of the requested region. */
+  rawDiagnostic?(region: TraeRegion): TraeRawDiagnostic
+}
+
+/** Redact token-like content before it crosses to the browser. */
+function safeMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[redacted token]')
+    .replace(/(\b(?:code|token|refresh_token|access_token)=)[^&\s]+/giu, '$1[redacted]')
+    .slice(0, 500)
+}
+
+function json(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body)
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
+  res.end(payload)
+}
+
+/**
+ * How many models one test run may probe. Each one spends quota, so the cap is
+ * a spending limit as much as a request-size limit; the card tests the enabled
+ * models, which is a user-chosen set rather than the whole directory.
+ */
+export const TRAE_MODELS_TEST_LIMIT = 64
+/** Bound on how many OTHER accounts one status read may probe (issue #25). */
+const TRAE_CREDIT_ALTERNATIVE_LIMIT = 8
+
+/**
+ * Read the ids to test from a POST body.
+ *
+ * Only ids present in the region's live catalog are accepted downstream (see
+ * index.ts), so this reader only has to produce a bounded, string-only list.
+ */
+async function readModelTestBody(req: IncomingMessage): Promise<string[]> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.byteLength
+    if (size > 64 * 1024) throw new Error('request body too large')
+    chunks.push(buffer)
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  if (text === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    throw new Error('invalid JSON body')
+  }
+  const raw = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['ids'] : undefined
+  if (!Array.isArray(raw)) throw new Error('body must carry an ids array')
+  const ids: string[] = []
+  for (const value of raw) {
+    if (typeof value !== 'string') continue
+    const id = value.trim()
+    if (id !== '' && !ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * Read the accountId a per-account route needs from a POST body. A bounded,
+ * single-string reader — the same families of guards the model-test body uses,
+ * because the claim route here is a state-changing endpoint.
+ */
+async function readAccountBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.byteLength
+    if (size > 16 * 1024) throw new Error('request body too large')
+    chunks.push(buffer)
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  if (text === '') throw new Error('empty body')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    throw new Error('invalid JSON body')
+  }
+  const accountId = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['accountId'] : undefined
+  if (typeof accountId !== 'string' || accountId.trim() === '') throw new Error('body must carry an accountId string')
+  return accountId.trim()
+}
+
+/** Loopback browser origins only; other devices are refused until trusted origins exist. */
+function loopbackOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin
+  if (origin === undefined) return true
+  try {
+    const { hostname } = new URL(origin)
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a pack's expiry is one the card can actually use.
+ *
+ * One predicate, shared by the per-pack projection and the bucket summary, so
+ * the two can never disagree about which packs count as dated. `0` and the
+ * non-finite values are excluded: a `0` here would read as 1970 and sort ahead
+ * of every real date, and `NaN`/`Infinity` are not dates at all.
+ */
+function usableExpiry(endTimeMs: number | undefined): endTimeMs is number {
+  return typeof endTimeMs === 'number' && Number.isFinite(endTimeMs) && endTimeMs > 0
+}
+
+/**
+ * Map the credit snapshot to the card's compact credit document.
+ *
+ * Exported so the "is another account usable?" probe (issue #25) derives its
+ * two buckets through the SAME endpoint classification the bound account uses
+ * — a second implementation of the Work/general split would be free to disagree
+ * with the number shown next to it.
+ */
+export function toCredits(snapshot: { summary: { totalAmount: number; consumedAmount: number }; packs: { displayDesc: string; availableEndpoint?: number; consumedCredits?: number; creditsLimit?: number; endTimeMs?: number }[] }, nowMs: number = Date.now()): TraeWebCredits {
+  const { totalAmount, consumedAmount } = snapshot.summary
+  const credit = (value: number): number => Math.round(value * 10_000) / 10_000
+  const accounts = snapshot.packs.map(pack => ({
+    displayDesc: pack.displayDesc,
+    remain: credit(Math.max(0, (pack.creditsLimit ?? 0) - (pack.consumedCredits ?? 0))),
+    size: pack.creditsLimit ?? 0,
+    // Carried through because the pack's own expiry is what answers "which pack
+    // lapses first" — the one question the remaining balance alone cannot. The
+    // upstream already reports it per pack (`end_time`), so this is projection,
+    // not a new read. Omitted rather than zeroed when there is no usable time:
+    // a `0` here would read as 1970 and sort ahead of every real date.
+    ...(usableExpiry(pack.endTimeMs) ? { expiresAtMs: pack.endTimeMs } : {}),
+  }))
+  // `usage.credits_amount` is consumed credit, not remaining balance. Derive
+  // each bucket's balance from its quota, matching total - consumed upstream.
+  const remaining = (endpoint: number): number => snapshot.packs
+    .filter(pack => pack.availableEndpoint === endpoint)
+    .reduce((sum, pack) => credit(sum + Math.max(0, (pack.creditsLimit ?? 0) - (pack.consumedCredits ?? 0))), 0)
+  return {
+    total: totalAmount,
+    consumed: consumedAmount,
+    available: totalAmount - consumedAmount,
+    workAvailable: remaining(1),
+    generalAvailable: remaining(0),
+    accounts,
+    ...summarisePackExpiry(accounts, nowMs),
+  }
+}
+
+/** Empty bucket, used whenever no pack qualifies. */
+const NO_EXPIRING_CREDIT: TraeWebExpiringCredits = { total: 0, packs: 0 }
+
+/**
+ * Sum the credit lapsing inside `horizonMs` of `nowMs`.
+ *
+ * Only positive balances count: a lapsed pack with nothing left is not a loss,
+ * and including it would make every long-lived account look permanently at
+ * risk. Only *future* expiries count too — see {@link expiredPacks}.
+ */
+function expiringWithin(
+  packs: readonly { remain: number; expiresAtMs?: number }[],
+  nowMs: number,
+  horizonMs: number,
+): TraeWebExpiringCredits {
+  return sumExpiring(packs, expiresAt => expiresAt > nowMs && expiresAt - nowMs <= horizonMs)
+}
+
+/**
+ * Sum the credit whose pack has already lapsed but still carries a balance.
+ *
+ * Kept apart from {@link expiringWithin} because a lapsed pack satisfies every
+ * forward-looking horizon at once (`expiresAt - now` is negative, hence "within
+ * 24 hours"), which would make a long-dead pack look permanently imminent.
+ */
+function expiredPacks(
+  packs: readonly { remain: number; expiresAtMs?: number }[],
+  nowMs: number,
+): TraeWebExpiringCredits {
+  return sumExpiring(packs, expiresAt => expiresAt <= nowMs)
+}
+
+/** Shared accumulator over packs whose expiry passes `matches`. */
+function sumExpiring(
+  packs: readonly { remain: number; expiresAtMs?: number }[],
+  matches: (expiresAtMs: number) => boolean,
+): TraeWebExpiringCredits {
+  let total = 0
+  let count = 0
+  let earliestExpiresAtMs: number | undefined
+  for (const pack of packs) {
+    const expiresAt = pack.expiresAtMs
+    if (!usableExpiry(expiresAt) || pack.remain <= 0) continue
+    if (!matches(expiresAt)) continue
+    total += pack.remain
+    count += 1
+    if (earliestExpiresAtMs === undefined || expiresAt < earliestExpiresAtMs) earliestExpiresAtMs = expiresAt
+  }
+  if (count === 0) return NO_EXPIRING_CREDIT
+  return {
+    total,
+    packs: count,
+    ...(earliestExpiresAtMs === undefined ? {} : { earliestExpiresAtMs }),
+  }
+}
+
+/**
+ * Bucket the card's credit by how soon it lapses.
+ *
+ * Returns no `expiry` at all when not one pack carried a usable end time, so a
+ * caller can tell "nothing is expiring" apart from "we were never told when
+ * anything expires" — the second must not render as reassurance. Uses the same
+ * {@link usableExpiry} predicate as the per-pack projection, so a summary is
+ * never produced from a set of dates the card itself would not carry.
+ */
+function summarisePackExpiry(
+  accounts: readonly { remain: number; expiresAtMs?: number }[],
+  nowMs: number,
+): { expiry?: TraeWebCreditExpiry } {
+  if (!accounts.some(pack => usableExpiry(pack.expiresAtMs))) return {}
+  const HOUR = 3_600_000
+  const DAY = 24 * HOUR
+  return {
+    expiry: {
+      within24h: expiringWithin(accounts, nowMs, DAY),
+      within3d: expiringWithin(accounts, nowMs, 3 * DAY),
+      within7d: expiringWithin(accounts, nowMs, 7 * DAY),
+      // Expiry in the past is worth surfacing too: the balance is still listed
+      // as credit, so a reader watching only the total would over-count it.
+      expired: expiredPacks(accounts, nowMs),
+    },
+  }
+}
+
+/** Map the check-in answer to the card's compact document. */
+export function toCheckin(status: {
+  checkedIn: boolean
+  credits: number
+  enabled: boolean
+  didCheckedIn: boolean
+  extraCredits?: number
+}): TraeWebCheckin {
+  return {
+    checkedIn: status.checkedIn,
+    didCheckedIn: status.didCheckedIn,
+    credits: status.credits,
+    enabled: status.enabled,
+    ...status.extraCredits === undefined ? {} : { extraCredits: status.extraCredits },
+  }
+}
+
+/**
+ * Assemble one region's card document. `region` is the tab the card is on; the
+ * region-scoped store already answers with only that region's accounts, so the
+ * document's model slots and account list are that region's by construction.
+ * Sign-in state is read-only; credit is a live billing answer whose failure
+ * degrades to `creditsError` rather than failing the whole document.
+ */
+export async function traeWebUsage(deps: TraeUsageRouteOptions, region: TraeRegion): Promise<TraeWebUsage> {
+  const store = deps.store(region)
+  const enabled = deps.regionEnabled(region)
+  const accounts = await store.accounts()
+  const authStatus = await store.status()
+  if (authStatus.state !== 'signed-in') {
+    // A bare "signed out" is undiagnosable on a machine whose layout differs
+    // from the ones this plugin was written against — the reported WSL2/CLI
+    // case. The probed paths and their failure reasons are safe to surface:
+    // they carry paths and error text, never token material.
+    const { failures } = await store.diagnose()
+    return {
+      status: 'signed-out',
+      accounts,
+      enabled,
+      searched: failures.map(failure => ({
+        path: failure.path,
+        edition: failure.edition,
+        source: failure.source,
+        reason: failure.reason,
+        ...failure.message === undefined ? {} : { message: safeMessage(failure.message) },
+      })),
+    }
+  }
+  let credential
+  try {
+    credential = await store.resolve()
+  } catch (error: unknown) {
+    // Account selection must remain available even when the selected token is
+    // expired or its refresh request fails. Report that as account-level status
+    // instead of converting the entire route into HTTP 500.
+    return { status: 'signed-out', accounts, enabled, message: safeMessage(error) }
+  }
+  // Only user-facing identity and expiry cross to the browser. Token material
+  // and stable user IDs stay on the Host. The requested region drives which
+  // per-region model directory and selection this document reports, and which
+  // usage surface the credits block reads.
+  //
+  // `appLogin` is the same class of fact — identity only — read best-effort:
+  // a store whose scan fails must not take the whole document down for a hint.
+  let appLogin: TraeWebAppLogin | undefined
+  try {
+    appLogin = await deps.liveLogin?.(region)
+  } catch { /* the hint is optional; the document still answers */ }
+  const account = {
+    accountId: accounts.find(item => item.selected)?.id ?? '',
+    accountName: credential.accountName ?? credential.userId,
+    tokenExpiresAtMs: credential.expiresAtMs,
+    region,
+    enabled,
+    accounts,
+    ...appLogin === undefined ? {} : { appLogin },
+    models: deps.displayModels(region).map(model => ({ ...model, ...model.input === undefined ? {} : { input: [...model.input] } })),
+    enabledModelIds: [...deps.enabledModelIds(region)],
+    ...deps.rawDiagnostic === undefined ? {} : { rawChat: deps.rawDiagnostic(region) },
+  }
+  const client = deps.client(region)
+  if (region === 'ai') {
+    // The international region is subscription-based: read its pay status
+    // instead of the CN Work-credit packs. A failure degrades to
+    // payStatusError, exactly like creditsError on the CN side.
+    try {
+      const payStatus = await client.payStatus()
+      return { status: 'signed-in', ...account, payStatus }
+    } catch (error: unknown) {
+      return { status: 'signed-in', ...account, payStatusError: safeMessage(error) }
+    }
+  }
+  // Credits and check-in are independent reads, so they settle independently:
+  // a broken check-in endpoint still leaves the credit panel usable, and vice
+  // versa. Each failure degrades to its own error field rather than taking the
+  // whole document down.
+  const [snapshotResult, checkinResult] = await Promise.allSettled([
+    client.snapshot(),
+    client.checkinStatus(),
+  ])
+  const credits = snapshotResult.status === 'fulfilled' ? toCredits(snapshotResult.value) : undefined
+  // Only when the BOUND account is actually empty do the other accounts get
+  // read (issue #25). A healthy account must not pay for extra upstream calls.
+  const exhausted = credits !== undefined && credits.workAvailable <= 0 && credits.generalAvailable <= 0
+  const alternatives = exhausted ? await creditAlternatives(deps, region, accounts) : undefined
+  return {
+    status: 'signed-in',
+    ...account,
+    ...credits === undefined
+      ? { creditsError: snapshotResult.status === 'rejected' ? safeMessage(snapshotResult.reason) : 'unknown' }
+      : { credits },
+    ...checkinResult.status === 'fulfilled'
+      ? { checkin: toCheckin(checkinResult.value) }
+      : { checkinError: safeMessage(checkinResult.reason) },
+    ...alternatives === undefined ? {} : { alternatives },
+  }
+}
+
+/**
+ * Other accounts on this machine that still have credit, when the bound one has
+ * none (issue #25).
+ *
+ * Only ever called for a bound account whose own credits came back at zero, so
+ * a healthy setup pays nothing for it. Each candidate is read through
+ * `creditsOfAccount`, which must not disturb the bound account; a candidate
+ * that fails is simply absent from the answer rather than reported as a broken
+ * account, because a stale token on an unrelated login is not this card's
+ * problem to explain. The list is capped so a machine with many stale
+ * credentials cannot turn one status read into a burst of upstream calls.
+ */
+async function creditAlternatives(
+  deps: TraeUsageRouteOptions,
+  region: TraeRegion,
+  accounts: readonly TraeWebAccount[],
+): Promise<TraeWebCreditAlternative[] | undefined> {
+  if (deps.creditsOfAccount === undefined) return undefined
+  const candidates = accounts
+    .filter(account => !account.selected && account.region === region)
+    .slice(0, TRAE_CREDIT_ALTERNATIVE_LIMIT)
+  if (candidates.length === 0) return undefined
+  const found = await Promise.all(candidates.map(async account => {
+    try {
+      const credits = await deps.creditsOfAccount!(region, account.id)
+      if (credits === undefined) return undefined
+      if (credits.workAvailable <= 0 && credits.generalAvailable <= 0) return undefined
+      return {
+        id: account.id,
+        accountName: account.accountName,
+        edition: account.edition,
+        workAvailable: credits.workAvailable,
+        generalAvailable: credits.generalAvailable,
+      }
+    } catch { return undefined }
+  }))
+  const alternatives = found.filter((entry): entry is TraeWebCreditAlternative => entry !== undefined)
+  return alternatives.length === 0 ? undefined : alternatives
+}
+
+/**
+ * The region a request addresses, or a 400 answer. Absent parameter means the
+ * domestic tab; an unknown value is refused rather than guessed.
+ */
+/**
+ * The general balance of every account in one region.
+ *
+ * One upstream read per account — the same call `creditsOfAccount` already
+ * makes for the exhausted-balance alternatives, widened to every account and to
+ * zero balances. Costs nothing until the composer panel is opened, so the
+ * 5-minute readout never pays for it (see {@link TRAE_ACCOUNT_CREDITS_PATH}).
+ *
+ * An account whose read fails or is unavailable still appears, without a
+ * figure: the table lists how many accounts exist even when one cannot be
+ * quoted, rather than dropping it and making the switch unavailable.
+ */
+export async function traeAccountCredits(
+  deps: TraeUsageRouteOptions,
+  region: TraeRegion,
+): Promise<TraeWebAccountCredit[]> {
+  const accounts = (await deps.store(region).accounts()).filter(account => account.region === region)
+  if (accounts.length === 0) return []
+  return Promise.all(accounts.map(async account => {
+    let generalAvailable: number | undefined
+    if (account.selected) {
+      // The BOUND account goes through the shared client, the same path
+      // `traeWebUsage` uses, because its stored credential is normally EXPIRED:
+      // `resolve()` refreshes it on read. `creditsOfAccount` is a pure lookup by
+      // design and hands the stale token back as-is — which is fine for the
+      // alternatives, where `creditAlternatives` excludes the selected account
+      // for exactly this reason, but leaves this row with no figure.
+      try {
+        generalAvailable = toCredits(await deps.client(region).snapshot()).generalAvailable
+      } catch { /* keep the row, without a figure */ }
+    } else if (deps.creditsOfAccount !== undefined) {
+      try {
+        const credits = await deps.creditsOfAccount(region, account.id)
+        generalAvailable = credits?.generalAvailable
+      } catch { /* keep the row, without a figure */ }
+    }
+    return { id: account.id, accountName: account.accountName, selected: account.selected, ...generalAvailable === undefined ? {} : { generalAvailable } }
+  }))
+}
+
+function requestRegion(req: IncomingMessage, res: ServerResponse): TraeRegion | undefined {
+  const region = regionOfTraeStatusUrl(req.url ?? '/')
+  if (region === undefined) {
+    json(res, 400, { error: 'unknown region' })
+    return undefined
+  }
+  return region
+}
+
+/** Mount the GET usage route on an optional webServer context. */
+export function registerTraeUsageRoute(ctx: Context, deps: TraeUsageRouteOptions): void {
+  ctx.effect(() => {
+    const disposeUsage = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_USAGE_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'GET') {
+          json(res, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!loopbackOrigin(req)) {
+          json(res, 403, { error: 'origin-not-trusted' })
+          return
+        }
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        try {
+          json(res, 200, await traeWebUsage(deps, region))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    /**
+     * General balance of every account in the region — read only when the
+     * composer panel is opened. One upstream read per account, paid once per
+     * open rather than on the 5-minute cycle (see
+     * {@link TRAE_ACCOUNT_CREDITS_PATH}).
+     */
+    const disposeAccountCredits = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_ACCOUNT_CREDITS_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        try {
+          json(res, 200, { accounts: await traeAccountCredits(deps, region) })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    /**
+     * Per-account status for one row of the card's account table (CN:
+     * check-in + balances; ai: subscription). Read-only, one upstream call per
+     * account, fetched once per table render. `accountId` rides in the query
+     * (a GET, like every other read-only sibling). Absent `accountStateOf`
+     * the route answers 503 so the table degrades to bare rows.
+     */
+    const disposeAccountStatus = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_ACCOUNT_STATUS_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        if (deps.accountStateOf === undefined) return json(res, 503, { error: 'account status unavailable' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        const accountId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('accountId')
+        if (accountId === null || accountId.trim() === '') return json(res, 400, { error: 'missing accountId' })
+        try {
+          const state = await deps.accountStateOf(region, accountId)
+          if (state === undefined) return json(res, 404, { error: 'unknown account' })
+          json(res, 200, state)
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    const disposeAccounts = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_ACCOUNTS_REFRESH_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        try {
+          json(res, 200, { accounts: await deps.store(region).accounts() })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    const disposeRefresh = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_MODELS_REFRESH_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        if (deps.discoverModels === undefined) return json(res, 503, { error: 'model refresh unavailable' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        try {
+          const models = await deps.discoverModels(region)
+          json(res, 200, { models })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    /**
+     * One-click availability test for the enabled models.
+     *
+     * This ROUTE COSTS QUOTA: each tested model gets a real, minimal chat call.
+     * Every other plugin surface is read-only, so the guards here are tighter
+     * than a GET's — POST only, loopback origin only, and the id list is taken
+     * from the request body and validated against the region's live catalog, so
+     * a caller cannot spend calls on arbitrary upstream config names. The count
+     * is capped for the same reason.
+     */
+    const disposeModelsTest = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_MODELS_TEST_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        if (deps.probeModels === undefined) return json(res, 503, { error: 'model test unavailable' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        let ids: string[]
+        try {
+          ids = await readModelTestBody(req)
+        } catch (error: unknown) {
+          return json(res, 400, { error: safeMessage(error) })
+        }
+        if (ids.length === 0) return json(res, 400, { error: 'no models to test' })
+        if (ids.length > TRAE_MODELS_TEST_LIMIT) {
+          return json(res, 400, { error: `too many models (limit ${String(TRAE_MODELS_TEST_LIMIT)})` })
+        }
+        try {
+          json(res, 200, await deps.probeModels(region, ids))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    /**
+     * Daily check-in claim — the ONLY route in this plugin that mutates
+     * upstream account state, so it is guarded more tightly than its siblings:
+     * POST only, loopback origin only, and the status read runs FIRST so a day
+     * the ACCOUNT has already been paid for never reaches the upstream claim.
+     *
+     * `alreadyCheckedIn` and `deviceCheckedIn` are deliberately separate
+     * answers, because the two flags mean different things (see
+     * {@link TraeWebCheckin}): `checkedIn` is the account's reward for today
+     * existing, `didCheckedIn` is this MACHINE having spent its check-in —
+     * possibly for a different account. Treating the latter as "claimed today"
+     * was a shipped bug: after switching accounts the card said "claimed
+     * today" and disabled the button, which is the right call for the wrong
+     * reason and hides that the new account was never rewarded.
+     *
+     * The upstream is idempotent per Beijing day (verified 2026-09-24: a
+     * repeat claim answers `code: 0` with the entitlement total unchanged), but
+     * relying on that for correctness would put the guard in someone else's
+     * hands.
+     */
+    const disposeCheckin = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_CHECKIN_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        if (region !== 'cn') {
+          // The `/trae/api/v2/ug/*` family does not exist on the ai gateways
+          // (404, probed 2026-09-24); answering 404 here states that plainly
+          // instead of surfacing an upstream HTML 404 as a network fault.
+          return json(res, 404, { error: 'check-in is not available for the international region' })
+        }
+        try {
+          // The route now claims FOR a named account (the row's button), so the
+          // accountId travels in the body instead of always targeting the bound
+          // account. The per-account path uses `claimCheckinOf`, which reaches
+          // the account's own credential without moving the binding; absent
+          // that dependency the route degrades to the bound client (tests,
+          // hosts without the per-account seam).
+          let accountId: string | undefined
+          try {
+            accountId = await readAccountBody(req)
+          } catch {
+            // A bodyless call is the legacy bound-account behaviour.
+            accountId = undefined
+          }
+          if (accountId !== undefined) {
+            if (deps.claimCheckinOf === undefined) return json(res, 503, { error: 'check-in by account unavailable' })
+            const outcome = await deps.claimCheckinOf(region, accountId)
+            if (outcome === undefined) return json(res, 404, { error: 'unknown account' })
+            const { claim, checkin: after } = outcome
+            const deviceClaimed = claim.code === CHECKIN_DEVICE_ALREADY_CLAIMED
+            return json(res, 200, {
+              claimed: claim.claimed,
+              alreadyCheckedIn: after.checkedIn,
+              ...deviceClaimed ? { deviceCheckedIn: true } : {},
+              code: claim.code,
+              message: claim.message,
+              checkin: toCheckin(after),
+            })
+          }
+          const client = deps.client(region)
+          const current = await client.checkinStatus()
+          if (!current.enabled) {
+            return json(res, 409, { error: 'check-in is not enabled for this account' })
+          }
+          // Only the ACCOUNT-level flag stops a claim: this account's reward
+          // for today already exists, so there is genuinely nothing to do and
+          // no request is worth sending.
+          if (current.checkedIn) {
+            return json(res, 200, {
+              claimed: false,
+              alreadyCheckedIn: true,
+              deviceCheckedIn: current.didCheckedIn,
+              checkin: toCheckin(current),
+            })
+          }
+          // The device is spent but this account is not: a claim can only be
+          // refused (9095). Do not send it, and report the refusal truthfully.
+          if (current.didCheckedIn) {
+            return json(res, 200, {
+              claimed: false,
+              alreadyCheckedIn: false,
+              deviceCheckedIn: true,
+              code: CHECKIN_DEVICE_ALREADY_CLAIMED,
+              message: 'this device already used today\'s check-in',
+              checkin: toCheckin(current),
+            })
+          }
+          const claim = await client.claimCheckin()
+          const checkin = await client.checkinStatus()
+          // 9095 is the upstream's own "该设备今日已参与签到": the device raced
+          // us (another window, or the Trae app itself). It is a refusal, but a
+          // benign one — reporting it as a hard error would tell the user
+          // something is broken when the day is simply used up.
+          const deviceClaimed = claim.code === CHECKIN_DEVICE_ALREADY_CLAIMED
+          json(res, 200, {
+            claimed: claim.claimed,
+            alreadyCheckedIn: false,
+            ...deviceClaimed ? { deviceCheckedIn: true } : {},
+            code: claim.code,
+            message: claim.message,
+            checkin: toCheckin(checkin),
+          })
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    return () => {
+      disposeCheckin()
+      disposeRefresh()
+      disposeModelsTest()
+      disposeAccounts()
+      disposeAccountCredits()
+      disposeAccountStatus()
+      disposeUsage()
+    }
+  }, 'dsh-connect-trae: Web usage route')
+}

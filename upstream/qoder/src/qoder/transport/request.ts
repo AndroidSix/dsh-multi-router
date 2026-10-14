@@ -1,0 +1,294 @@
+/** Internal request lifecycle primitives for the Qoder transport. */
+
+import { createHash } from 'node:crypto'
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib'
+import { QoderLlmError, qoderHttpError, qoderRequestId } from '../errors.ts'
+import { logParsedResponse, redactLogPayload, type QoderLogger } from './logging.ts'
+import { defaultUserAgent, qoderClientType } from './wire/cosy.ts'
+
+export const defaultMetadataTimeoutMs = 15_000
+export const defaultResponseHeaderTimeoutMs = 60_000
+export const defaultMaxJsonBytes = 2 * 1024 * 1024
+export const defaultMaxErrorBytes = 16 * 1024
+const metadataRetryBaseDelayMs = 200
+const maxProviderRetryDelayMs = 10_000
+
+export function opaqueCredentialKey(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function retryableMetadataError(error: unknown): error is QoderLlmError {
+  return error instanceof QoderLlmError
+    && ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'].includes(error.code)
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('aborted', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new DOMException('aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+export async function retryMetadataRead<T>(
+  signal: AbortSignal,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (!retryableMetadataError(error) || signal.aborted) throw error
+    const providerDelay = error.failure.providerRetryAfterMs
+    const delayMs = providerDelay === undefined
+      ? metadataRetryBaseDelayMs + Math.floor(Math.random() * 41)
+      : Math.min(providerDelay, maxProviderRetryDelayMs)
+    await abortableDelay(delayMs, signal)
+    return operation()
+  }
+}
+
+export function withDeadline(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; timeoutSignal: AbortSignal } {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  return {
+    timeoutSignal,
+    signal: signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]),
+  }
+}
+
+export async function readLimitedText(
+  response: Response,
+  maxBytes: number,
+  label: string,
+): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new QoderLlmError(`${label} exceeded its response size limit.`, 'MALFORMED_RESPONSE')
+  }
+  if (!response.body) return ''
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > maxBytes) {
+        throw new QoderLlmError(`${label} exceeded its response size limit.`, 'MALFORMED_RESPONSE')
+      }
+      chunks.push(value)
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+
+  // Decode at the byte level: a host fetch whose stack does not decompress
+  // (the Electron desktop host) yields the compressed stream verbatim, and a
+  // TextDecoder pass would destroy those bytes irreversibly. The encoding is
+  // taken from the response header; when that is missing too, the gzip magic
+  // number is the fallback signal.
+  let payload = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)))
+  const encoding = (response.headers.get('content-encoding') ?? '').toLowerCase()
+  const looksGzipped = payload.length >= 2 && payload[0] === 0x1f && payload[1] === 0x8b
+  if (encoding !== '' || looksGzipped) {
+    try {
+      if (encoding.includes('gzip') || (encoding === '' && looksGzipped)) {
+        payload = gunzipSync(payload)
+      } else if (encoding.includes('br')) {
+        payload = brotliDecompressSync(payload)
+      } else if (encoding.includes('deflate')) {
+        payload = inflateSync(payload)
+      }
+    } catch {
+      throw new QoderLlmError(`${label} arrived compressed but could not be decompressed.`, 'MALFORMED_RESPONSE')
+    }
+    if (payload.byteLength > maxBytes) {
+      throw new QoderLlmError(`${label} exceeded its response size limit.`, 'MALFORMED_RESPONSE')
+    }
+  }
+  return new TextDecoder().decode(payload)
+}
+
+interface Flight<T> {
+  controller: AbortController
+  promise: Promise<T>
+  settled: boolean
+  waiters: number
+}
+
+export class SingleFlight<T> {
+  private readonly flights = new Map<string, Flight<T>>()
+
+  run(
+    key: string,
+    signal: AbortSignal | undefined,
+    start: (signal: AbortSignal) => Promise<T>,
+    abortedError: () => Error,
+  ): Promise<T> {
+    if (signal?.aborted) return Promise.reject(abortedError())
+
+    let flight = this.flights.get(key)
+    if (flight === undefined || flight.controller.signal.aborted) {
+      const controller = new AbortController()
+      const created = {} as Flight<T>
+      created.controller = controller
+      created.settled = false
+      created.waiters = 0
+      created.promise = start(controller.signal).finally(() => {
+        created.settled = true
+        if (this.flights.get(key) === created) this.flights.delete(key)
+      })
+      flight = created
+      this.flights.set(key, created)
+    }
+
+    flight.waiters++
+    return new Promise<T>((resolve, reject) => {
+      let finished = false
+      const finish = (callback: () => void): void => {
+        if (finished) return
+        finished = true
+        signal?.removeEventListener('abort', onAbort)
+        flight.waiters--
+        if (flight.waiters === 0 && !flight.settled) {
+          if (this.flights.get(key) === flight) this.flights.delete(key)
+          flight.controller.abort('all callers aborted')
+        }
+        callback()
+      }
+      const onAbort = (): void => finish(() => reject(abortedError()))
+      signal?.addEventListener('abort', onAbort, { once: true })
+      flight.promise.then(
+        value => finish(() => resolve(value)),
+        error => finish(() => reject(error)),
+      )
+    })
+  }
+}
+
+export interface OpenApiJsonRequestOptions {
+  url: string
+  method?: 'GET' | 'POST' | undefined
+  token?: string | undefined
+  machineId?: string | undefined
+  body?: unknown
+  headers?: Record<string, string> | undefined
+  signal?: AbortSignal | undefined
+  timeoutMs?: number | undefined
+  logger?: QoderLogger | undefined
+  operation: string
+  logCategory?: string | undefined
+  userAgent?: string | undefined
+}
+
+export async function openApiJsonRequest<T>(
+  fetchImpl: typeof fetch,
+  options: OpenApiJsonRequestOptions,
+): Promise<T> {
+  const method = options.method ?? (options.body !== undefined ? 'POST' : 'GET')
+  const timeoutMs = options.timeoutMs ?? defaultMetadataTimeoutMs
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const requestSignal = options.signal === undefined
+    ? timeoutSignal
+    : AbortSignal.any([options.signal, timeoutSignal])
+  const startedAt = performance.now()
+
+  options.logger?.debug?.(`[Qoder ${options.operation}] Requesting`, { url: options.url, method })
+
+  try {
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      // Keep the upstream from compressing: the Electron desktop host's fetch
+      // does not decompress the body, and a compressed stream would reach the
+      // JSON parser as binary noise. `identity` states the preference
+      // explicitly; readLimitedText decompresses as a fallback.
+      'accept-encoding': 'identity',
+      'user-agent': options.userAgent ?? defaultUserAgent,
+      'cosy-version': '1.0.1',
+      'cosy-clienttype': qoderClientType,
+      ...options.headers,
+    }
+    if (options.token) {
+      headers.authorization = `Bearer ${options.token}`
+    }
+    if (options.machineId) {
+      headers['Cosy-MachineToken'] = options.machineId
+      headers['Cosy-MachineType'] = 'host'
+    }
+    let bodyText: string | undefined
+    if (options.body !== undefined) {
+      headers['content-type'] = 'application/json'
+      bodyText = typeof options.body === 'string' ? options.body : JSON.stringify(options.body)
+    }
+
+    const response = await fetchImpl(options.url, {
+      method,
+      headers,
+      // Under exactOptionalPropertyTypes RequestInit forbids an explicit
+      // `body: undefined`; omit the property when there is no payload.
+      ...bodyText === undefined ? {} : { body: bodyText },
+      signal: requestSignal,
+    })
+
+    options.logger?.debug?.(`[Qoder ${options.operation}] Request completed`, {
+      status: response.status,
+      statusText: response.statusText,
+      durationMs: Math.round(performance.now() - startedAt),
+      ...qoderRequestId(response.headers) === undefined ? {} : { requestId: qoderRequestId(response.headers) },
+    })
+
+    const text = await readLimitedText(
+      response,
+      response.ok ? defaultMaxJsonBytes : defaultMaxErrorBytes,
+      `Qoder ${options.operation} response`,
+    )
+
+    if (!response.ok) {
+      options.logger?.error?.(`[Qoder ${options.operation}] Request failed`, redactLogPayload(text))
+      // The body rides along so a 401/403 that is really the upstream's
+      // queue answer (code 10605 / isQueued) classifies as a rate limit
+      // instead of an authorization failure — see qoderQueueSignal.
+      throw qoderHttpError(
+        `Failed to execute Qoder ${options.operation} with status ${response.status}.`,
+        response,
+        text,
+      )
+    }
+
+    let data: unknown
+    try {
+      data = JSON.parse(text)
+    } catch {
+      options.logger?.error?.(`[Qoder ${options.operation}] Invalid JSON response`, redactLogPayload(text))
+      throw new QoderLlmError(`Failed to parse Qoder ${options.operation} JSON response`, 'MALFORMED_RESPONSE')
+    }
+
+    if (options.logCategory) {
+      logParsedResponse(options.logger, options.logCategory, data)
+    }
+
+    return data as T
+  } catch (error: unknown) {
+    if (error instanceof QoderLlmError) throw error
+    if (options.signal?.aborted) {
+      throw new QoderLlmError(`Qoder ${options.operation} request was aborted.`, 'ABORTED')
+    }
+    if (timeoutSignal.aborted) {
+      throw new QoderLlmError(`Qoder ${options.operation} request timed out.`, 'TIMEOUT')
+    }
+    throw new QoderLlmError(`Qoder ${options.operation} network request failed.`, 'TRANSPORT', { cause: error })
+  }
+}

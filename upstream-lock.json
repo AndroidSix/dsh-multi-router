@@ -1,0 +1,17 @@
+{
+  "workbuddy": {
+    "url": "https://github.com/corrinehu/dsh-workbuddy-connect.git",
+    "commit": "caad7a9447e9c5c4f09653c6d5c2c34782c9ad81",
+    "version": "0.7.3"
+  },
+  "trae": {
+    "url": "https://github.com/dingminhua/dsh-connect-trae.git",
+    "commit": "43f29df900f10fa2a5817e5740d196637bc062dd",
+    "version": "3.4.3"
+  },
+  "qoder": {
+    "url": "https://github.com/masknull/dsh-qoder-connect.git",
+    "commit": "160461bc8d5905e79bef631eb5057dd918b7ca10",
+    "version": "0.2.3"
+  }
+}

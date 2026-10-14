@@ -1,0 +1,289 @@
+{
+  "accounts": [
+    {
+      "id": "wb1",
+      "provider": "workbuddy",
+      "credentialFile": "accounts/wb1/credential.json"
+    },
+    {
+      "id": "wb2",
+      "provider": "workbuddy",
+      "credentialFile": "accounts/wb2/credential.json"
+    },
+    {
+      "id": "tr1",
+      "provider": "trae",
+      "credentialFile": "accounts/tr1/credential.json",
+      "identityFile": "accounts/tr1/identity.json"
+    },
+    {
+      "id": "tr2",
+      "provider": "trae",
+      "credentialFile": "accounts/tr2/credential.json",
+      "identityFile": "accounts/tr2/identity.json"
+    },
+    {
+      "id": "qd1",
+      "provider": "qoder",
+      "credentialFile": "accounts/qd1/credential.json"
+    },
+    {
+      "id": "qd2",
+      "provider": "qoder",
+      "credentialFile": "accounts/qd2/credential.json"
+    }
+  ],
+  "cooldownMs": 60000,
+  "requestTimeoutMs": 300000,
+  "catalogTtlMs": 300000,
+  "retryServerErrors": false,
+  "routes": {
+    "free": {
+      "name": "Free · 免费模型自动路由",
+      "freeOnly": true,
+      "visible": true,
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "strategy": "failover",
+      "preferExpiringCredits": false,
+      "targets": [
+        {
+          "provider": "workbuddy"
+        },
+        {
+          "provider": "workbuddy-ai"
+        },
+        {
+          "provider": "trae"
+        },
+        {
+          "provider": "trae-global"
+        },
+        {
+          "provider": "qoder"
+        },
+        {
+          "provider": "qoder-global"
+        }
+      ]
+    },
+    "deepseek-v4.1-flash": {
+      "name": "DeepSeek V4.1 Flash · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "deepseek-v4.1-flash",
+            "DeepSeek-V4.1-Flash",
+            "DeepSeek-V4.1-Flash-Official"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "deepseek-v4.1-flash",
+            "DeepSeek-V4.1-Flash",
+            "DeepSeek-V4.1-Flash-Official"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "dfmodel"
+          ]
+        }
+      ]
+    },
+    "deepseek-v4-pro": {
+      "name": "DeepSeek V4 Pro · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "deepseek-v4-pro"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "DeepSeek-V4-Pro-Official",
+            "DeepSeek-V4-Pro"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "dmodel"
+          ]
+        }
+      ]
+    },
+    "glm-5.3": {
+      "name": "GLM-5.3 · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "glm-5.3"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "glm-5.3"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "gmodel"
+          ]
+        }
+      ]
+    },
+    "glm-5.3-flash": {
+      "name": "GLM-5.3-Flash · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "glm-5.3-flash"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "glm-5.3-flash"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "gfmodel"
+          ]
+        }
+      ]
+    },
+    "kimi-k3": {
+      "name": "Kimi-K3 · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "kimi-k3-1"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "kimi-k3"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "kmodel_latest"
+          ]
+        }
+      ]
+    },
+    "kimi-k2.8-preview": {
+      "name": "Kimi-K2.8-Preview · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "kimi-k2.8-preview"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "kimi-k2.8-preview"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "kmodel"
+          ]
+        }
+      ]
+    },
+    "minimax-m2.7": {
+      "name": "MiniMax-M2.7 · 自动路由",
+      "contextWindow": 200000,
+      "maxTokens": 32000,
+      "preferExpiringCredits": true,
+      "expiringWithinDays": 7,
+      "targets": [
+        {
+          "provider": "workbuddy",
+          "models": [
+            "minimax-m2.7"
+          ]
+        },
+        {
+          "provider": "trae",
+          "models": [
+            "minimax-m2.7"
+          ]
+        },
+        {
+          "provider": "qoder",
+          "models": [
+            "mmodel"
+          ]
+        }
+      ]
+    }
+  },
+  "models": {
+    "workbuddy": {
+      "deepseek-v4.1-flash": {
+        "name": "DeepSeek V4.1 Flash",
+        "visible": true
+      }
+    },
+    "trae": {},
+    "qoder": {
+      "dfmodel": {
+        "name": "DeepSeek Flash",
+        "visible": true
+      }
+    }
+  },
+  "modelVisibility": {
+    "workbuddy": false,
+    "workbuddy-ai": false,
+    "trae": false,
+    "trae-global": false,
+    "qoder": false,
+    "qoder-global": false
+  },
+  "usageRetentionDays": 3
+}
