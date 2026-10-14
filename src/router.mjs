@@ -51,7 +51,7 @@ export class Router {
   }
   candidates(alias) {
     const route = this.config.routes[alias];
-    if (!Object.hasOwn(this.config.routes, alias)) throw new RouteError(404, 'unknown_model');
+    if (!Object.hasOwn(this.config.routes, alias)) throw new RouteError(404, 'unknown_model', [], '插件路由表中没有该调用名称，请在配置页新建或恢复对应路由');
     const candidates = route.targets.flatMap((target, index) => this.config.accounts
       .filter(a => a.enabled !== false && a.provider === target.provider && (!target.account || a.id === target.account))
       .flatMap(account => route.freeOnly ? (this.freeModels?.(account) ?? []).filter(m => (!target.model || m.id === target.model) && (!target.models || target.models.includes(m.id)))
@@ -93,14 +93,17 @@ export class Router {
   }
   exhaustHint({ alias, route, strategy, candidates, expiryCandidates, attempts }) {
     const kinds = new Set(attempts.map(a => a.kind));
-    const cooling = candidates.map(c => this.remainingCooldown(c, alias, route)).filter(r => r > 0);
+    const modelOnly = attempts.length > 0 && [...kinds].every(k => ['model_unavailable', 'reasoning_effort_unavailable', 'model_no_longer_free'].includes(k));
+    const cooling = candidates.map(c => this.remainingCooldown(c, alias, route)).filter(ms => ms > 0);
     const soonest = cooling.length ? Math.min(...cooling) : undefined;
-    const countdown = soonest !== undefined ? `约 ${Math.max(1, Math.ceil(soonest / 1000))} 秒后` : '';
-    if (!expiryCandidates.length) return '该路由没有可用的账号目标，请检查账号是否被禁用或目标渠道是否匹配';
-    if (!attempts.length && ['tokens', 'credits'].includes(strategy)) return `所有账号本轮${strategy === 'tokens' ? ' Token' : '积分'}额度已用完，或因缺少用量计量被暂停轮换`;
-    if (attempts.length && [...kinds].every(k => ['model_unavailable', 'reasoning_effort_unavailable', 'model_no_longer_free'].includes(k))) return '候选账号目录中均没有该模型（或所选推理档位、免费资格不满足）';
-    if (soonest !== undefined && cooling.length === candidates.length) return `所有账号都在冷却中，${countdown}可重试`;
-    if (soonest !== undefined) return `部分账号仍在冷却中，${countdown}可重试`;
+    const countdown = soonest === undefined ? undefined : `约 ${Math.max(1, Math.ceil(soonest / 1000))} 秒后可重试`;
+    if (!expiryCandidates.length) return '该路由没有可用的账号目标：账号可能已全部禁用，或与目标渠道不匹配';
+    if (modelOnly) return `已尝试的账号目录中都没有该模型（或所选推理档位、免费资格不满足）${countdown ? `；其余账号冷却中，${countdown}` : ''}`;
+    if (soonest !== undefined && cooling.length >= candidates.length) {
+      return attempts.length ? `所有候选账号本次调用均失败并已进入冷却，${countdown}` : `全部账号都在失败冷却中，${countdown}`;
+    }
+    if (soonest !== undefined) return `部分账号仍在失败冷却中，${countdown}`;
+    if (!attempts.length && ['tokens', 'credits'].includes(strategy)) return `所有账号的本轮${strategy === 'tokens' ? ' Token' : '积分'}额度已用完，或因缺少用量计量而暂停参与轮换`;
     return undefined;
   }
   async chat(input, signal) {
@@ -212,7 +215,7 @@ export class Router {
       // Upstream messages can contain credentials or request text: log metadata only.
       this.onAttempt({ ...attempt, alias });
       const retryable = status < 500 || this.config.retryServerErrors;
-      if (!retryable) throw new RouteError(status, 'upstream_failed', attempts);
+      if (!retryable) throw new RouteError(status, 'upstream_failed', attempts, '上游返回 5xx 且未开启「5xx 和网络错误也切换账号」，本次请求已停止');
       const scope = [401, 402, 429].includes(status) ? '*' : route.freeOnly && actualModel ? `${alias}:${actualModel}` : alias;
       this.cooldowns.set(`${account.id}:${scope}`, this.now() + this.config.cooldownMs);
     }

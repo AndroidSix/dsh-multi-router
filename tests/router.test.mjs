@@ -30,9 +30,30 @@ test('exhausted pool stays finite and cools down without exposing upstream messa
     count++; return { ok: false, status: 429, kind: 'soft_rate', message: 'secret-token' };
   } }));
   await assert.rejects(router.chat(request), error => {
-    assert.equal(error.status, 503); assert.equal(error.attempts.length, 4); assert.doesNotMatch(error.message, /secret-token/); return true;
+    assert.equal(error.status, 503); assert.equal(error.attempts.length, 4); assert.doesNotMatch(error.message, /secret-token/);
+    assert.match(error.message, /所有候选账号本次调用均失败并已进入冷却，约 60 秒后可重试/); return true;
   });
-  await assert.rejects(router.chat(request), /account_pool_exhausted/); assert.equal(count, 4);
+  await assert.rejects(router.chat(request), error => {
+    assert.match(error.message, /^account_pool_exhausted（全部账号都在失败冷却中，约 \d+ 秒后可重试）$/);
+    assert.equal(error.hint, error.message.slice(error.message.indexOf('（') + 1, error.message.lastIndexOf('）')));
+    assert.equal(error.attempts.length, 0); return true;
+  });
+  assert.equal(count, 4);
+});
+test('exhaustion hints name the cause: missing models, partial cooldown and no candidates', async () => {
+  const other = { ...config(), routes: { fixed: { contextWindow: 200000, maxTokens: 1000, targets: [{ provider: 'workbuddy', model: 'gpt-5.2' }] } } };
+  const missing = new Router(other, async () => ({ models: async () => [model], chat: async () => answer() }));
+  await assert.rejects(missing.chat({ model: 'fixed', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    /已尝试的账号目录中都没有该模型（或所选推理档位、免费资格不满足）/);
+
+  const mixed = new Router(config(), async a => ({ models: async () => a.id === 'wb1' ? [] : [model],
+    chat: async () => ({ ok: false, status: a.id === 'wb2' ? 429 : 403, kind: a.id === 'wb2' ? 'soft_rate' : 'forbidden' }) }));
+  const request = { model: 'ds4.1f', stream: true, messages: [{ role: 'user', content: 'hi' }] };
+  await assert.rejects(mixed.chat(request), /部分账号仍在失败冷却中，约 \d+ 秒后可重试/);
+
+  const off = config(); off.accounts.forEach(a => { a.enabled = false; });
+  const none = new Router(off, async () => ({ models: async () => [model], chat: async () => answer() }));
+  await assert.rejects(none.chat(request), /该路由没有可用的账号目标：账号可能已全部禁用，或与目标渠道不匹配/);
 });
 test('cooldown expires and 5xx retries are opt-in', async () => {
   let now = 100, calls = 0;

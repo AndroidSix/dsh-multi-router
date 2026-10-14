@@ -59,6 +59,7 @@ export function createShim(router, { modelPrefix = '' } = {}) {
       const status = error instanceof RouteError ? error.status : signal.aborted ? 504 : 500;
       json(res, status, { error: { type: error instanceof RouteError ? error.code : signal.aborted ? 'request_timeout' : 'internal_error',
         message: error instanceof RouteError ? error.message : 'Router request failed',
+        hint: error instanceof RouteError ? error.hint : undefined,
         attempts: error instanceof RouteError ? error.attempts : [] } });
     }
   }
