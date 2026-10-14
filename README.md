@@ -6,7 +6,7 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.3.6。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.3.7。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
@@ -111,11 +111,13 @@ dsh plugin --profile web add github:AndroidSix/dsh-multi-router
 
 默认获取 main 分支；仓库已包含编译好的 `lib/`，安装端无需 clone、构建或运行初始化命令，也没有安装时构建脚本。首次启用自动在当前设备的 DSH 数据目录创建空账号池及预制路由，随后在面板添加账号或导入配置。已有配置不会被覆盖；损坏的配置也不会自动重置。安装 / 更新 / 卸载后需**完全退出并重启**对应的 DSH 进程生效。
 
-已安装用户更新：
+已安装用户更新（也适用于旧版从本地 `.tgz` 安装的用户）：
 
 ```bash
-dsh plugin --profile desktop update dsh-multi-router
+dsh plugin --profile desktop add github:AndroidSix/dsh-multi-router
 ```
+
+这会将同名插件的安装源切换为 GitHub 并获取当前版本，账号、路由和统计保存在包目录之外，不会随包替换。旧的 `file:...tgz` 依赖绑定一个固定本地文件，普通更新不会自动改为 GitHub 来源。已经使用 GitHub 来源时，也可以执行 `dsh plugin --profile desktop update dsh-multi-router`。安装后的运行进程仍需完全退出并重启；「刷新面板」只刷新账号和用量，不会更新插件代码。GitHub 提交、GitHub Releases 和 npm 版本是不同发布来源，第三方商店是否提示更新取决于其检测方式。
 
 Desktop 若提示 CLI 仅安装依赖、未自动启用 bundle：完全退出 Desktop 后，在 desktop profile 的 `package.json` 的 `dsh.profile.bundles` 数组里追加 `"dsh-multi-router"`（保留其他 bundle），再启动并打开配置页。
 
