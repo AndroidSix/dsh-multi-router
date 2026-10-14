@@ -91,7 +91,42 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 
 ## 安装
 
-### 方式一：GitHub 链接安装（首选）
+### 方式一：npm 安装（首选）
+
+在 DSH 的 **插件页 → 安装插件** 输入包名：
+
+```text
+dsh-multi-router
+```
+
+CLI 安装最新正式版：
+
+```bash
+# Desktop profile
+dsh plugin --profile desktop add dsh-multi-router
+
+# Web profile
+dsh plugin --profile web add dsh-multi-router
+```
+
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.3.8`。
+
+已使用 npm 来源的用户更新：
+
+```bash
+dsh plugin --profile desktop update dsh-multi-router
+```
+
+原先通过 GitHub 或本地 `.tgz` 安装的用户，运行下面命令切换到 npm 正式版本：
+
+```bash
+dsh plugin --profile desktop add dsh-multi-router
+```
+
+这是同名插件的来源切换；账号、路由和用量保存在包目录之外，会保留。更新完成后**完全退出并重新打开 DeepSeek Harness**；关闭窗口或点击「刷新面板」不会重载后台。插件面板检测到前后台版本不一致时会显示重启步骤。
+
+### 方式二：GitHub 链接安装
+
 
 在 DSH 的 **插件页 → 安装插件** 输入 GitHub 仓库地址：
 
@@ -123,7 +158,7 @@ Desktop 若提示 CLI 仅安装依赖、未自动启用 bundle：完全退出 De
 
 > 首次安装请先在 DSH 中**关闭**原 WorkBuddy / Trae / Qoder 三个独立连接器（仅关闭，不必卸载，不影响其凭证），避免同名 provider 冲突。
 
-### 方式二：本地构建 / 离线包
+### 方式三：本地构建 / 离线包
 
 ```bash
 git clone https://github.com/AndroidSix/dsh-multi-router.git
@@ -136,7 +171,7 @@ dsh plugin --profile desktop add ./dsh-multi-router-0.3.8.tgz
 
 ### 配置账号
 
-安装后直接在配置面板「账号与登录」添加；也可先用 CLI：
+安装并启动插件后，已登录的 WorkBuddy / Trae 账号会自动进入账号池；Qoder PAT、多账号凭证和其它设备配置可在面板中添加或导入。也可用 CLI：
 
 ```bash
 node lib/cli.js add --id wb1 --provider workbuddy --source '/path/workbuddy-desktop.info'

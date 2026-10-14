@@ -34,3 +34,9 @@
 ---
 
 *维护者保留在不讨论的情况下关闭违反本规则 issue / PR 的权利。*
+
+## 发布版本
+
+同步修改 `package.json` 与 `package-lock.json` 的版本号，并更新 `CHANGELOG.md`。运行 `npm run check`，提交源码与 `lib/` 编译产物并推送 main，再发布对应 `v版本号` 的 GitHub Release。`publish.yml` 会自动测试、生成 `.tgz` 附件并同步到 npm，正式版使用 `latest`，预发布使用 `next`。发布包依靠 `package.json` 白名单排除本机账号、配置与统计；用户安装说明以 README 的 npm 方式为首选。
+
+已通过 npm Trusted Publishing 绑定该仓库的 `publish.yml`，无需配置长期 npm Token。失败后可在 Actions 中选择 Publish to npm，手动输入已有 Release 标签重试；已发布的版本不能覆盖，修改内容需使用新的版本号。
