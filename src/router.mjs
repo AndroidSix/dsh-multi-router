@@ -97,8 +97,10 @@ export class Router {
     const cooling = candidates.map(c => this.remainingCooldown(c, alias, route)).filter(ms => ms > 0);
     const soonest = cooling.length ? Math.min(...cooling) : undefined;
     const countdown = soonest === undefined ? undefined : `约 ${Math.max(1, Math.ceil(soonest / 1000))} 秒后可重试`;
-    if (!expiryCandidates.length) return '该路由没有可用的账号目标：账号可能已全部禁用，或与目标渠道不匹配';
-    if (modelOnly) return `已尝试的账号目录中都没有该模型（或所选推理档位、免费资格不满足）${countdown ? `；其余账号冷却中，${countdown}` : ''}`;
+    if (!expiryCandidates.length) return route.freeOnly
+      ? '该路由当前没有可用的免费模型：可能已恢复收费、限免到期或目录获取失败'
+      : '该路由没有可用的账号目标：账号可能已全部禁用，或与目标渠道不匹配';
+    if (modelOnly) return `已尝试的账号目录中都没有该模型、所选推理档位或免费资格不满足${countdown ? `；其余账号冷却中，${countdown}` : ''}`;
     if (soonest !== undefined && cooling.length >= candidates.length) {
       return attempts.length ? `所有候选账号本次调用均失败并已进入冷却，${countdown}` : `全部账号都在失败冷却中，${countdown}`;
     }

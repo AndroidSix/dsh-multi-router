@@ -44,7 +44,7 @@ test('exhaustion hints name the cause: missing models, partial cooldown and no c
   const other = { ...config(), routes: { fixed: { contextWindow: 200000, maxTokens: 1000, targets: [{ provider: 'workbuddy', model: 'gpt-5.2' }] } } };
   const missing = new Router(other, async () => ({ models: async () => [model], chat: async () => answer() }));
   await assert.rejects(missing.chat({ model: 'fixed', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
-    /已尝试的账号目录中都没有该模型（或所选推理档位、免费资格不满足）/);
+    /已尝试的账号目录中都没有该模型、所选推理档位或免费资格不满足/);
 
   const mixed = new Router(config(), async a => ({ models: async () => a.id === 'wb1' ? [] : [model],
     chat: async () => ({ ok: false, status: a.id === 'wb2' ? 429 : 403, kind: a.id === 'wb2' ? 'soft_rate' : 'forbidden' }) }));

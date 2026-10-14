@@ -64,6 +64,8 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 
 所有上游 400–499 都切换，包括模型、权限、额度、限流和输入错误。输入 JSON 无效、未知本地模型等本地错误直接结束。401、402、429 冷却该账号全部路由；其他 4xx 冷却当前路由。默认冷却 60 秒，按账号池顺序和目标顺序尝试，成功账号优先承接下一次请求。每次请求每个账号/实际模型最多调用一次，耗尽返回 `account_pool_exhausted`。
 
+耗尽类错误（`account_pool_exhausted` / `free_model_pool_unavailable` / `credit_usage_unavailable` / `unknown_model` / `upstream_failed`）在 message 末尾附带中文提示，响应 JSON 同时返回独立的 `hint` 字段：本次全部候选失败并进入冷却、纯冷却期内再次请求（含最短剩余秒数）、候选目录均无该模型 / 推理档位 / 免费资格不满足、没有可用账号目标、Token / 积分轮换暂停、5xx 未开启切换等分别给出对应说明。上游私有文案仍被剥离，只保留账号、状态码与错误类别。
+
 5xx / 网络错误默认结束，设置 `retryServerErrors` 可启用切换。开始输出文本、推理或工具调用后不重放请求；取消请求也不触发换号。Harness 层重试为 0，由插件统一控制。
 
 ## 权重、额度与临期积分
