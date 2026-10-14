@@ -1,9 +1,10 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { parseWorkBuddyVersion, compareWorkBuddyVersions } from '../upstream/workbuddy/src/update.ts';
 
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
@@ -58,11 +59,45 @@ async function registryVersion(service, profile, spec, signal) {
   }
   throw Error('npm 查询失败；请检查 DSH 网络、registry 设置或包的访问权限');
 }
+async function refreshGitPlugin(service, profile, row, options, signal) {
+  const require = createRequire(profile.installAnchor);
+  const { runProfilePnpm } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-plugin-manager/operations')).href);
+  const { registryPlan, attributeFailure } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-plugin-manager/registry')).href);
+  const { classifyInstallFailure } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-plugin-manager')).href);
+  const plan = registryPlan(options.registry, await service.registries());
+  return withFileLock(join(profile.dir, 'package.json'), async () => {
+    const files = await Promise.all(['package.json', 'pnpm-lock.yaml'].map(async name => {
+      const path = join(profile.dir, name);
+      try { return { path, content: await readFile(path, 'utf8') }; } catch (e) { if (e.code !== 'ENOENT') throw e; return { path }; }
+    }));
+    const restore = () => Promise.all(files.map(f => f.content === undefined ? rm(f.path, { force: true }) : writeFileAtomic(f.path, f.content, { mode: 0o600 })));
+    if (JSON.parse(files[0].content).dependencies?.[row.name] !== row.spec) throw Error('安装来源已改变，请重新检查');
+    let result;
+    try {
+      for (const registry of plan) {
+        signal.throwIfAborted();
+        // pnpm add reuses an unchanged Git lock; update explicitly refreshes its tracked ref.
+        const run = await runProfilePnpm({ ...profile, profile: profile.name }, ['update', row.name, ...(registry ? [`--registry=${registry}`] : [])], {
+          execution: 'service', ...profile.packageManager, signal, outputBytes: 16384, idleTimeoutMs: 600000,
+          lookupTimeoutMs: 20000, activateNewBundles: false,
+        });
+        if (run.exitCode === 0 && !run.timedOut && !signal.aborted) return { packageResult: run, application: 'restart-required' };
+        const kind = classifyInstallFailure({ log: run.output, timedOut: run.timedOut });
+        result = { packageResult: { ...run, kind }, application: signal.aborted ? 'cancelled' : 'failed',
+          ...(run.incompatible?.length ? { error: { code: 'incompatible-version' } } : {}) };
+        await restore();
+        if (signal.aborted || attributeFailure(kind, run.output, { kind: 'git', host: 'github.com' }) !== 'registry') break;
+      }
+      return result;
+    } catch (e) { await restore(); throw e; }
+  }, { waitMs: 120000 });
+}
 export class PluginUpdates {
-  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion } = {}) {
+  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin } = {}) {
     this.service = service; this.profile = profile; this.fetchImpl = fetchImpl;
     this.rows = []; this.abort = new AbortController();
     this.lookup = lookup;
+    this.refreshGit = refreshGit;
   }
   state() { return { available: !!this.service()?.listBundles && !!this.profile()?.dir,
     checkedAt: this.checkedAt, rows: this.rows.map(({ spec, ...row }) => ({ ...row, source: row.source.kind === 'unsupported' ? { kind: 'unsupported' } : row.source })), job: this.job, error: this.error }; }
@@ -134,8 +169,13 @@ export class PluginUpdates {
     if (original?.dependencies?.[row.name] !== row.spec) throw Error('安装来源已改变，请重新检查');
     const current = (await this.service().listBundles()).find(b => b.name === row.name);
     if (!current || current.enabled !== row.checkedEnabled || current.version !== row.version) throw Error('插件版本或启用状态已改变，请重新检查');
-    const result = await this.service().installBundle(row.target, { enabled: row.enabled, requestId: this.job.id,
-      ...(registry ? { registry } : {}) });
+    const options = { enabled: row.enabled, requestId: this.job.id, ...(registry ? { registry } : {}) };
+    let result;
+    if (row.source.kind === 'github') {
+      this.gitAbort = new AbortController();
+      try { result = await this.refreshGit(this.service(), this.profile(), row, options, AbortSignal.any([this.abort.signal, this.gitAbort.signal])); }
+      finally { this.gitAbort = undefined; }
+    } else result = await this.service().installBundle(row.target, options);
     if (result.packageResult && result.packageResult.exitCode !== 0 || ['failed', 'cancelled'].includes(result.application) || result.error) {
       return { name: row.name, status: 'failed', application: result.application,
         message: result.pendingBuilds?.length ? '依赖构建脚本需要授权，请到 DSH 插件安装页允许这些脚本后重试' : result.error?.code === 'incompatible-version' ? '插件与当前 DSH 不兼容，请先升级 DSH 或选择兼容版本' : `安装未完成（${result.error?.code ?? result.packageResult?.kind ?? 'unknown'}）；请到 DSH 插件页查看安装日志`,
@@ -144,6 +184,12 @@ export class PluginUpdates {
     const installed = (await this.service().listBundles()).find(b => b.name === row.name);
     if (row.source.kind === 'npm' && installed?.version !== row.latestVersion) return { name: row.name, status: 'failed',
       message: `实际安装版本 ${installed?.version ?? '未知'} 与检查版本 ${row.latestVersion} 不同；请稍后重新检查，可能是镜像尚未同步或发行时间限制` };
+    if (row.source.kind === 'github') {
+      const lock = await locks(this.profile().dir);
+      const pnpm = lock.pnpm?.importers?.['.']?.dependencies?.[row.name]?.version, npm = lock.npm?.packages?.[`node_modules/${row.name}`]?.resolved;
+      if (githubCommit(lock.preferNpm ? npm ?? pnpm : pnpm ?? npm) !== row.latestCommit) return { name: row.name, status: 'failed', restartRequired: true,
+        message: '实际 Git 提交与检查结果不一致，请重新检查后重试；不把仍停留在旧锁文件的安装报告为成功' };
+    }
     return { name: row.name, status: 'installed', application: result.application, message: result.application === 'restart-required' ? '已安装，完全退出并重新打开 DSH 后生效' : '安装完成', restartRequired: result.application === 'restart-required' };
   }
   update(names, registry) {
@@ -187,7 +233,7 @@ export class PluginUpdates {
     else if (input.action === 'plugins.check') this.check();
     else if (input.action === 'plugins.update') this.update(input.names, input.registry);
     else if (input.action === 'plugins.install') this.install(input.spec, input.registry);
-    else if (input.action === 'plugins.cancel') { if (this.job?.state === 'running') { this.job.cancelRequested = true; if (this.job.kind !== 'check') await this.service().cancelInstall?.(this.job.id); } }
+    else if (input.action === 'plugins.cancel') { if (this.job?.state === 'running') { this.job.cancelRequested = true; if (this.gitAbort) this.gitAbort.abort(); else if (this.job.kind !== 'check') await this.service().cancelInstall?.(this.job.id); } }
     else throw Error('未知插件操作');
   }
 }

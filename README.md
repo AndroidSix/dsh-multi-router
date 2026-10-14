@@ -6,7 +6,7 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.4.0。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.4.1。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
@@ -98,7 +98,7 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 在本插件配置面板打开 **插件更新**，管理当前 DSH 配置中的全部已安装插件，包括其它插件和已停用插件。首次打开自动检查，后续超过 24 小时重新打开时再检查，也可随时点击「检查全部更新」。
 
 - **npm 来源**：比较 SemVer，保留 `latest` / `next` 等频道；固定版本和版本范围在用户确认更新后升级到最新正式版本。查询沿用 DSH 的 registry、网络、认证与镜像回退设置。
-- **GitHub 来源**：比较原分支 / 标签的 Git 提交，版本号未变化也能发现更新。支持 `github:用户/仓库`、GitHub HTTPS / SSH 地址及锁文件中的提交；固定 Git 提交不自动解除。GitHub 查询需要能够访问仓库公开元数据，私有仓库或限流会显示原因，不会猜测最新提交。
+- **GitHub 来源**：比较原分支 / 标签的 Git 提交，版本号未变化也能发现更新；安装时使用官方 `pnpm update` 路径刷新原分支，并核验实际锁文件提交，避免 `pnpm add` 复用旧锁文件。支持 `github:用户/仓库`、GitHub HTTPS / SSH 地址及锁文件中的提交；固定 Git 提交不自动解除。GitHub 查询需要能够访问仓库公开元数据，私有仓库或限流会显示原因，不会猜测最新提交。
 - 可按名称、来源和可更新状态筛选；支持单个更新、勾选批量更新、取消以及失败后重试。更新前显示目标，并保留每个插件原有启用 / 停用状态。
 - 可直接输入 npm 包名 / 指定版本，或 `github:用户/仓库` 安装新插件。实际安装由 DSH 官方插件管理服务执行兼容检查、镜像重试、配置锁及失败回滚；依赖构建脚本仍在 DSH 原安装页授权，不自动绕过。
 - 结果显示实际安装是否成功及是否需要重启。npm 镜像尚未同步、网络超时、版本不兼容会明确提示。GitHub 下载不会由 npm 镜像代替。
@@ -124,7 +124,7 @@ dsh plugin --profile desktop add dsh-multi-router
 dsh plugin --profile web add dsh-multi-router
 ```
 
-包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.4.0`。
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.4.1`。
 
 已使用 npm 来源的用户更新：
 
@@ -181,7 +181,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.4.0.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.4.1.tgz
 ```
 
 ### 配置账号

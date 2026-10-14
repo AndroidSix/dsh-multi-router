@@ -19,12 +19,14 @@ async function fixture(t, overrides = {}) {
     calls.push({ spec, opts });
     const name = spec.slice(0, spec.indexOf('@', 1));
     bundles.find(b => b.name === name).version = name === 'disabled-plugin' ? '1.2.0-beta.1' : '1.1.0';
+    if (name === 'dsh-multi-router') await writePrivateJson(join(dir, 'package-lock.json'), { packages: { 'node_modules/dsh-multi-router': { resolved: `git+https://github.com/owner/router.git#${latest}` } } });
     return { packageResult: { exitCode: 0 }, application: 'restart-required' };
   }, ...overrides };
   const checks = [];
   const updater = new PluginUpdates({ service: () => service, profile: () => ({ dir }),
     lookup: async (s, p, spec) => { checks.push(spec); return { version: spec.endsWith('@next') ? '1.2.0-beta.1' : '1.1.0' }; },
-    fetchImpl: async url => { assert.ok(url.startsWith('https://api.github.com/repos/owner/')); return Response.json({ sha: url.includes('/pinned/') ? sha : latest }); } });
+    fetchImpl: async url => { assert.ok(url.startsWith('https://api.github.com/repos/owner/')); return Response.json({ sha: url.includes('/pinned/') ? sha : latest }); },
+    refreshGit: async (service, profile, row, options) => service.installBundle(row.target, options) });
   return { dir, deps, bundles, calls, checks, service, updater };
 }
 test('all installed plugins are listed; npm channels and Git commit changes are checked, including disabled plugins', async t => {
@@ -110,4 +112,13 @@ test('mixed npm and pnpm locks choose the newer installer record; unreadable npm
   updater.update(['other-plugin']); await updater.flight;
   assert.equal(updater.job.results[0].status, 'failed', 'a zero exit alone never falsely reports the latest npm version installed');
   assert.match(updater.job.results[0].message, /实际安装版本/);
+});
+
+test('Git installs never report success when a zero exit leaves the old locked commit', async t => {
+  const { updater, service } = await fixture(t);
+  updater.check(); await updater.flight;
+  service.installBundle = async () => ({ application: 'restart-required', packageResult: { exitCode: 0 } });
+  updater.update(['dsh-multi-router']); await updater.flight;
+  assert.equal(updater.job.results[0].status, 'failed');
+  assert.match(updater.job.results[0].message, /提交/);
 });
