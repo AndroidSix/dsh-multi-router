@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { assistantStreamFirstTokenTime } from '@deepseek-ai/dsh-llm';
 import { readFile } from 'node:fs/promises';
 import { writePrivateJson } from './config.mjs';
 const empty = () => ({ requests: 0, failures: 0, input: 0, output: 0, tokens: 0, unmetered: 0 });
@@ -55,7 +57,9 @@ export class Telemetry {
     this.data.events.unshift({ at, account: event.account, provider: event.provider, alias: event.alias, model: event.model ?? null, status: event.status,
       outcome: event.ok ? 'completed' : event.cancelled ? 'cancelled' : 'failed', input, output,
       tokens: measured(event.usage?.total_tokens) ?? (input !== null && output !== null ? input + output : null),
-      cachedInput: measured(event.usage?.prompt_tokens_details?.cached_tokens), reasoningOutput: measured(event.usage?.completion_tokens_details?.reasoning_tokens) });
+      cachedInput: measured(event.usage?.prompt_tokens_details?.cached_tokens), reasoningOutput: measured(event.usage?.completion_tokens_details?.reasoning_tokens),
+      callId: event.callId ?? null, session: event.session ?? null,
+      timing: event.timing ? Object.fromEntries(['modelMs', 'ttftMs', 'decodeMs', 'decodeTokens'].map(k => [k, measured(event.timing[k])])) : null, timingSource: event.timing ? 'upstream' : null });
     const dates = Object.keys(this.data.days).sort(); for (const key of dates.slice(0, -31)) delete this.data.days[key];
     return this.persist();
   }
@@ -64,19 +68,19 @@ export class Telemetry {
 }
 
 // Pass bytes through unchanged; parse only usage and terminal/error markers, never persist content.
-export function meterResponse(response, complete, signal) {
+export function meterResponse(response, complete, signal, { now = () => performance.now(), startedAt = now() } = {}) {
   if (!response.body) return response;
   const reader = response.body.getReader(), decoder = new TextDecoder();
-  let pending = '', usage, ended = false, failed = false, finished = false;
-  async function finish(cancelled = false) { if (finished) return; finished = true; await complete({ usage, ok: ended && !failed && !cancelled, cancelled }); }
+  let pending = '', usage, ended = false, failed = false, finished = false, firstToken = null, terminalAt = null;
+  async function finish(cancelled = false) { if (finished) return; finished = true; const end = terminalAt ?? now(); await complete({ usage, ok: ended && !failed && !cancelled, cancelled, timing: { modelMs: Math.max(0, end - startedAt), ttftMs: firstToken === null ? null : Math.max(0, firstToken - startedAt), decodeMs: firstToken === null ? null : Math.max(0, end - firstToken), decodeTokens: firstToken === null ? null : measured(usage?.completion_tokens) } }); }
   function inspect(bytes) {
     pending += decoder.decode(bytes, { stream: true });
     let split;
     while ((split = /\r?\n\r?\n/.exec(pending))) {
       const frame = pending.slice(0, split.index); pending = pending.slice(split.index + split[0].length);
       const data = frame.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
-      if (data === '[DONE]') { ended = true; continue; }
-      try { const value = JSON.parse(data); if (value.usage && ['prompt_tokens', 'completion_tokens', 'total_tokens'].some(k => Number.isFinite(value.usage[k]) && value.usage[k] >= 0)) usage = value.usage; if (value.error) failed = true; if (value.choices?.some(c => c.finish_reason)) ended = true; } catch { /* Unknown frame is forwarded. */ }
+      if (data === '[DONE]') { ended = true; terminalAt ??= now(); continue; }
+      try { const value = JSON.parse(data); if (value.usage && ['prompt_tokens', 'completion_tokens', 'total_tokens'].some(k => Number.isFinite(value.usage[k]) && value.usage[k] >= 0)) usage = value.usage; if (value.error) failed = true; if (firstToken === null && value.choices?.some(c => { const d = c.delta; return [d?.content, d?.reasoning_content, d?.reasoning].some(v => typeof v === 'string' && v.trim()) || d?.tool_calls?.some(t => t.function?.name || t.function?.arguments); })) firstToken = now(); if (value.choices?.some(c => c.finish_reason)) { ended = true; terminalAt ??= now(); } } catch { /* Unknown frame is forwarded. */ }
     }
     if (pending.length > 1024 * 1024) { pending = ''; failed = true; }
   }
@@ -88,4 +92,45 @@ export function meterResponse(response, complete, signal) {
     async cancel(reason) { await reader.cancel(reason).catch(() => {}); await finish(!ended); },
   });
   return new Response(body, { status: response.status, headers: response.headers });
+}
+
+// Link local transport attempts to DSH steps without retaining titles, prompts,
+// tool names/arguments/results, or the original session identity.
+export class SessionMetrics {
+  constructor(telemetry) { this.telemetry = telemetry; this.steps = new Map(); }
+  key(id) { return createHash('sha256').update(String(id)).digest('hex').slice(0, 24); }
+  beginCall(sessionId, purpose) {
+    const callId = randomUUID(), session = sessionId == null ? null : this.key(sessionId);
+    const step = session && this.steps.get(session);
+    if (step && !purpose) step.callId = callId;
+    return { callId, session };
+  }
+  event(session, event) {
+    const key = this.key(session.id), d = event.data;
+    if (event.type === 'step/start') { this.steps.set(key, { turn: d.turn, step: d.step, start: event.time, first: null, calls: new Map(), toolMs: 0, toolCount: 0, toolsCompleted: 0 }); return; }
+    const step = this.steps.get(key);
+    if (!step) return;
+    if (d.turn !== undefined && (d.turn !== step.turn || d.step !== undefined && d.step !== step.step)) return;
+    if (event.type === 'assistant/attempt') { step.first ??= assistantStreamFirstTokenTime(d.stream) ?? null; return; }
+    const row = this.telemetry.data.events.find(e => e.callId === step.callId && e.session === key);
+    if (event.type === 'assistant/message') {
+      if (!row || d.interrupted) return;
+      const first = step.first ?? assistantStreamFirstTokenTime(d.stream) ?? null;
+      const output = measured(d.usage?.outputTokens);
+      row.timing = { modelMs: Math.max(0, event.time - step.start), ttftMs: first === null ? null : Math.max(0, first - step.start),
+        decodeMs: first === null || output === null ? null : Math.max(0, event.time - first), decodeTokens: first === null ? null : output };
+      row.timingSource = 'dsh-step';
+    } else if (event.type === 'tool/call' && row?.timingSource === 'dsh-step') {
+      if (!step.calls.has(d.callId)) { step.calls.set(d.callId, event.time); step.toolCount++; }
+    } else if (event.type === 'tool/result' && step.calls.has(d.message?.source?.callId)) {
+      const id = d.message.source.callId;
+      step.toolMs += Math.max(0, event.time - step.calls.get(id)); step.toolsCompleted++; step.calls.delete(id);
+    } else if (event.type === 'step/end' || event.type === 'turn/end') {
+      this.steps.delete(key);
+    } else return;
+    if (row?.timingSource !== 'dsh-step') return;
+    Object.assign(row.timing, { toolMs: step.toolMs, toolCount: step.toolCount, toolsCompleted: step.toolsCompleted });
+    return this.telemetry.persist();
+  }
+  dispose(session) { this.steps.delete(this.key(session.id)); }
 }

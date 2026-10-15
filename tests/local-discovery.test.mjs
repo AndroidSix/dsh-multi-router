@@ -25,7 +25,7 @@ test('fresh installation automatically captures local WorkBuddy and Trae SOLO lo
   globalThis.fetch = async () => Response.json({ error: 'fixture-offline' }, { status: 503 });
   const disposers = []; let handler;
   const effect = cb => disposers.push(cb());
-  const ctx = { get: () => undefined, effect, emit() {}, logger: { info() {}, warn() {}, error() {} },
+  const ctx = { on() {}, get: () => undefined, effect, emit() {}, logger: { info() {}, warn() {}, error() {} },
     inject(ids, cb) { cb({ effect, webServer: { register(options) { handler = options.handler; return () => {}; } } }); },
     llm: { registerAdapter() { return () => {}; } } };
   t.after(async () => {

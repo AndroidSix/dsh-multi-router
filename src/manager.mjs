@@ -45,7 +45,7 @@ export class Manager {
     this.catalogs = new Map(); this.catalogErrors = new Map(); this.refreshes = new Map();
     this.closed = false; this.monitorFlights = new Map(); this.loginInfo = new Map();
     this.telemetry = new Telemetry(join(dirname(file), 'usage.json'));
-    this.plugins = new PluginUpdates(pluginAccess);
+    this.plugins = new PluginUpdates({ ...pluginAccess, stateFile: join(dirname(file), 'plugin-updates.json') });
     this.checkins = new Checkins(join(dirname(file), 'checkins.json'), this);
     this.setupFile = join(dirname(file), 'initial-setup.json');
     router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a);
@@ -58,6 +58,8 @@ export class Manager {
     try { this.setup = JSON.parse(await readFile(this.setupFile, 'utf8')); } catch { this.setup = undefined; }
     this.config = validateConfig(this.raw, this.file);
     await this.checkins.load();
+    await this.plugins.load();
+    if (this.plugins.state().available) await this.plugins.list().catch(() => { this.plugins.rows = []; });
     try {
       const saved = JSON.parse(await readFile(this.catalogFile, 'utf8'));
       for (const account of this.config.accounts) {
@@ -449,8 +451,8 @@ export class Manager {
           if (input.name !== undefined) account.name = input.name;
           if (input.enabled !== undefined) account.enabled = input.enabled;
         } else if (input.action === 'accounts.enabled') {
-          if (!PROVIDERS.includes(input.provider) || typeof input.enabled !== 'boolean') bad('供应商或路由参与开关无效');
-          for (const a of raw.accounts.filter(a => a.provider === input.provider)) a.enabled = input.enabled;
+          if ((input.provider !== undefined && !PROVIDERS.includes(input.provider)) || typeof input.enabled !== 'boolean') bad('供应商或路由参与开关无效');
+          for (const a of raw.accounts.filter(a => !input.provider || a.provider === input.provider)) a.enabled = input.enabled;
         } else if (input.action === 'account.move') {
           if (!account || ![-1, 1].includes(input.direction)) bad('账号或顺序无效');
           const group = raw.accounts.filter(a => a.provider === account.provider), position = group.indexOf(account) + input.direction;

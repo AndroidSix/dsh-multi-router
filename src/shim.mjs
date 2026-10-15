@@ -48,7 +48,7 @@ export function createShim(router, { modelPrefix = '' } = {}) {
         if (effort !== 'default' && !REASONING_EFFORTS.includes(effort)) throw new RouteError(400, 'invalid_reasoning_effort');
         input.reasoning_effort = effort === 'default' ? null : effort;
       }
-      const selected = await router.chat({ ...input, model: modelPrefix + input.model }, signal);
+      const selected = await router.chat({ ...input, model: modelPrefix + input.model }, signal, { callId: typeof req.headers['x-multi-router-call'] === 'string' ? req.headers['x-multi-router-call'] : undefined, session: typeof req.headers['x-multi-router-session'] === 'string' ? req.headers['x-multi-router-session'] : undefined });
       signal.throwIfAborted();
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no', 'X-Router-Account': selected.account, 'X-Router-Provider': selected.provider });

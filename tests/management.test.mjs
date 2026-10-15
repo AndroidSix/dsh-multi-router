@@ -37,6 +37,11 @@ test('account pool bulk selection only changes its provider, preserves check-in 
   await assert.rejects(act({ action: 'accounts.enabled', provider: 'trae', enabled: 'false' }), /开关/);
   await act({ action: 'accounts.enabled', provider: 'workbuddy', enabled: true });
   assert.ok(JSON.parse(await readFile(file)).accounts.filter(a => a.provider === 'workbuddy').every(a => a.enabled));
+  await act({ action: 'accounts.enabled', enabled: false });
+  assert.ok(manager.config.accounts.every(a => !a.enabled));
+  assert.equal(manager.config.accounts.find(a => a.id === 'wb1').autoCheckin, true);
+  await act({ action: 'accounts.enabled', enabled: true });
+  assert.ok(manager.config.accounts.every(a => a.enabled));
 });
 
 test('check-in schedule saves with configuration revision, survives reload and keeps account opt-ins unchanged', async t => {

@@ -162,3 +162,42 @@ test('stream usage details include the actual selected model and retain zero / m
   await ledger.record({ account: 'a', alias: 'flash', status: 200, ok: true, usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } });
   assert.equal(ledger.state().events[0].tokens, 0); assert.equal(ledger.state().events[0].input, 0);
 });
+
+test('stream timing ignores empty/control frames, preserves bytes and uses completion time before usage trailers', async () => {
+  let now = 0, summary;
+  const frames = [[100, { choices: [{ delta: { role: 'assistant', content: ' ' } }] }], [6800, { choices: [{ delta: { reasoning_content: 'private reasoning' } }] }], [16800, { choices: [{ finish_reason: 'stop' }] }], [20000, { usage: { completion_tokens: 620 } }]];
+  let i = 0;
+  const response = new Response(new ReadableStream({ pull(c) { if (i === frames.length) { c.close(); return; } const [at, frame] = frames[i++]; now = at; c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`)); } }, { highWaterMark: 0 }));
+  await meterResponse(response, s => { summary = s; }, undefined, { startedAt: 0, now: () => now }).text();
+  assert.equal(summary.ok, true); assert.equal(summary.timing.ttftMs, 6800);
+  assert.equal(summary.timing.modelMs, 16800); assert.equal(summary.timing.decodeMs, 10000); assert.equal(summary.timing.decodeTokens, 620);
+  await meterResponse(new Response('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\ndata: [DONE]\n\n'), s => { summary = s; }, undefined, { startedAt: 0, now: () => 500 }).text();
+  assert.equal(summary.timing.ttftMs, null); assert.equal(summary.timing.decodeTokens, null);
+});
+
+test('DSH metrics associate concurrent sessions and tool pairs without recording conversation or device identities', async t => {
+  const { SessionMetrics } = await import('../src/telemetry.mjs');
+  const dir = await mkdtemp(join(tmpdir(), 'session-metrics-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const ledger = new Telemetry(join(dir, 'usage.json')); const metrics = new SessionMetrics(ledger);
+  const a = { id: 'private-session-A' }, b = { id: 'private-session-B' };
+  const emit = (s, type, time, data = {}) => metrics.event(s, { type, time, data: { turn: 0, step: 0, ...data } });
+  emit(a, 'step/start', 1000); emit(b, 'step/start', 1000);
+  const ca = metrics.beginCall(a.id), cb = metrics.beginCall(b.id);
+  metrics.beginCall(a.id, 'session-title'); // Auxiliary calls must not steal the step.
+  for (const call of [ca, cb]) await ledger.record({ ...call, account: 'a', alias: 'flash', status: 200, ok: true, timing: { modelMs: 20 } });
+  const stream = [{ type: 'text-chunks', time0: 7800, dt: [], texts: ['private answer'] }];
+  await emit(b, 'assistant/message', 20000, { stream, usage: { outputTokens: 620 }, message: { content: 'private answer' } });
+  await emit(a, 'assistant/attempt', 9000, { stream });
+  await emit(a, 'assistant/message', 17800, { stream: [], usage: { outputTokens: 620 } });
+  for (const [id, at] of [['tool-one', 18000], ['tool-two', 19000]]) await emit(a, 'tool/call', at, { callId: id, arguments: 'private arguments' });
+  for (const id of ['tool-one', 'tool-one', 'tool-two']) await emit(a, 'tool/result', 20000, { message: { source: { callId: id }, content: 'private tool result' } });
+  await emit(a, 'step/end', 21000);
+  const row = ledger.data.events.find(e => e.callId === ca.callId);
+  assert.deepEqual(row.timing, { modelMs: 16800, ttftMs: 6800, decodeMs: 10000, decodeTokens: 620, toolMs: 3000, toolCount: 2, toolsCompleted: 2 });
+  assert.equal(row.timingSource, 'dsh-step');
+  assert.equal(ledger.data.events.find(e => e.callId === cb.callId).timing.modelMs, 19000);
+  metrics.dispose(b); assert.equal(metrics.steps.size, 0);
+  await ledger.queue;
+  assert.doesNotMatch(await readFile(ledger.file, 'utf8'), /private-session|private answer|private arguments|private tool result|tool-one|tool-two/);
+  const restored = new Telemetry(ledger.file); await restored.load(); assert.equal(restored.data.events.find(e => e.callId === ca.callId).timing.toolMs, 3000);
+});

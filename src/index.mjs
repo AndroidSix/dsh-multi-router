@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { createWorkBuddyAdapter } from '../upstream/workbuddy/src/adapter.ts';
 import { ensureConfig, PROVIDERS, PROVIDER_NAMES } from './config.mjs';
 import { createAccountClient } from './clients.mjs';
+import { SessionMetrics } from './telemetry.mjs';
 import { Router, abortable } from './router.mjs';
 import { createShim } from './shim.mjs';
 import { Manager, managementHandler, MANAGEMENT_PATH } from './manager.mjs';
@@ -22,7 +23,7 @@ export async function apply(ctx, options = {}) {
     manager?.plugins.abort.abort();
     manager?.checkins.abort.abort();
     for (const release of releases) release();
-    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.checkins.flight, manager?.telemetry.queue.catch(() => {})]);
+    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.checkins.flight, manager?.plugins.flight, manager?.plugins.saveQueue.catch(() => {}), manager?.telemetry.queue.catch(() => {})]);
   });
   const file = resolve(options.configFile ?? process.env.DSH_MULTI_ROUTER_CONFIG ?? defaultConfigFile());
   try {
@@ -35,14 +36,19 @@ export async function apply(ctx, options = {}) {
       ctx.emit('llm/adapters-updated');
     }, { service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext') });
     await manager.load();
+    const metrics = new SessionMetrics(manager.telemetry);
+    ctx.on('session/event', (session, event) => { try { return metrics.event(session, event)?.catch(() => ctx.logger.warn('multi-router: performance persistence failed')); } catch { ctx.logger.warn('multi-router: performance event unavailable'); } });
+    ctx.on('session/disposed', session => metrics.dispose(session));
     await manager.syncLocalAccounts().catch(() => ctx.logger.warn('multi-router: local login discovery failed; manual import remains available'));
     await manager.finishInitialSetup().catch(() => ctx.logger.warn('multi-router: first-install guidance could not be saved'));
     manager.checkins.tick();
+    void manager.plugins.tick().catch(() => ctx.logger.warn('multi-router: automatic update check unavailable'));
     if (disposed) return;
     void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
     void manager.monitorAll().catch(() => ctx.logger.warn('multi-router: usage persistence failed'));
     monitorTimer = setInterval(() => { void manager.syncLocalAccounts().then(() => manager.monitorAll()).catch(() => ctx.logger.warn('multi-router: local login discovery or usage persistence failed'));
       manager.checkins.tick();
+      void manager.plugins.tick().catch(() => ctx.logger.warn('multi-router: automatic update check unavailable'));
       void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed')); }, 60000);
     monitorTimer.unref();
     for (const provider of ['multi-router', ...PROVIDERS]) {
@@ -70,11 +76,12 @@ export async function apply(ctx, options = {}) {
       // in its own snapshot/header so Default, Off and configured defaults stay distinct.
       const streamWithSnapshot = wrapper.adapter.streamWithSnapshot.bind(wrapper.adapter);
       wrapper.adapter.streamWithSnapshot = (options, snapshot) => {
+        const call = metrics.beginCall(options.sessionId, options.purpose);
         const route = router.config.routes[(isRouter ? '' : `${provider}::`) + options.model];
         const effort = options.reasoningEffort ?? route?.reasoningEffort;
         const profiles = new Map(snapshot.profiles), profile = profiles.get(options.provider);
         if (!profile) return streamWithSnapshot(options, snapshot);
-        profiles.set(options.provider, { ...profile, headers: { ...profile.headers, 'X-Multi-Router-Reasoning': effort ?? 'default' } });
+        profiles.set(options.provider, { ...profile, headers: { ...profile.headers, 'X-Multi-Router-Reasoning': effort ?? 'default', 'X-Multi-Router-Call': call.callId, ...(call.session ? { 'X-Multi-Router-Session': call.session } : {}) } });
         return streamWithSnapshot({ ...options, ...(effort ? { reasoningEffort: effort } : {}) }, { ...snapshot, profiles });
       };
       const withDefault = model => {

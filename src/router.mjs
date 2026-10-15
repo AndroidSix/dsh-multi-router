@@ -108,7 +108,7 @@ export class Router {
     if (!attempts.length && ['tokens', 'credits'].includes(strategy)) return `所有账号的本轮${strategy === 'tokens' ? ' Token' : '积分'}额度已用完，或因缺少用量计量而暂停参与轮换`;
     return undefined;
   }
-  async chat(input, signal) {
+  async chat(input, signal, metadata = {}) {
     const alias = input.model;
     if (!Array.isArray(input.messages) || !input.messages.length || input.stream !== true) throw new RouteError(400, 'messages_and_stream_true_required');
     const initialRoute = this.config.routes[alias];
@@ -181,7 +181,7 @@ export class Router {
       signal?.throwIfAborted();
       const { account, target, key } = candidate;
       if (!available(candidate)) continue;
-      let result, actualModel;
+      let result, actualModel, startedAt;
       try {
         const client = await abortable(this.client(account), signal);
         const catalog = await abortable(client.models(signal), signal);
@@ -193,16 +193,17 @@ export class Router {
         const dedupe = `${account.id}:${model.id}`;
         if (tried.has(dedupe)) continue;
         tried.add(dedupe);
+        startedAt = performance.now();
         result = await abortable(client.chat({ ...input, model: model.id }, signal), signal);
         signal?.throwIfAborted();
         if (result.ok) {
           this.active.set(alias, key);
           this.onAttempt({ account: account.id, provider: account.provider, alias, model: model.id, status: 200 });
           const response = this.telemetry ? meterResponse(result.response, async summary => {
-            await this.telemetry.record({ ...summary, account: account.id, provider: account.provider, alias, model: model.id, accepted: true, status: summary.ok ? 200 : summary.cancelled ? 499 : 502 });
+            await this.telemetry.record({ ...summary, ...metadata, account: account.id, provider: account.provider, alias, model: model.id, accepted: true, status: summary.ok ? 200 : summary.cancelled ? 499 : 502 });
             await this.syncExpiring(alias, route, expiryCandidates, below);
             if (strategy === 'credits' || route.preferExpiringCredits) void this.monitor?.(account).then(() => this.syncExpiring(alias, route, expiryCandidates, below)).catch(() => {});
-          }, signal) : result.response;
+          }, signal, { startedAt }) : result.response;
           return { response, account: account.id, provider: account.provider };
         }
       } catch (error) {
@@ -213,7 +214,7 @@ export class Router {
       const status = result.status >= 400 && result.status <= 599 ? result.status : 502;
       const attempt = { account: account.id, provider: account.provider, status, kind: result.kind };
       attempts.push(attempt);
-      await this.telemetry?.record({ ...attempt, alias, model: actualModel, ok: false });
+      await this.telemetry?.record({ ...attempt, ...metadata, alias, model: actualModel, ok: false, timing: startedAt === undefined ? null : { modelMs: Math.max(0, performance.now() - startedAt) } });
       // Upstream messages can contain credentials or request text: log metadata only.
       this.onAttempt({ ...attempt, alias });
       const retryable = status < 500 || this.config.retryServerErrors;

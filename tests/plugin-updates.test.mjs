@@ -148,3 +148,46 @@ test('GitHub checks request SHA-only media instead of downloading large commit p
   updater.check(); await updater.flight;
   assert.equal(updater.rows.find(r => r.name === 'dsh-multi-router').status, 'failed');
 });
+
+test('automatic update checks are bounded to 24 hours, persist dismissals and remind again for new versions', async t => {
+  const { updater, checks, calls, dir } = await fixture(t);
+  let now = Date.parse('2026-10-15T12:00:00+08:00'); updater.now = () => now;
+  updater.stateFile = join(dir, 'update-reminders.json'); await updater.load();
+  await Promise.all([updater.tick(), updater.tick()]); await updater.flight;
+  assert.equal(checks.length, 2); assert.equal(calls.length, 0, 'checking never installs');
+  const reminders = updater.state().reminders;
+  assert.equal(reminders.length, 3); assert.ok(!reminders.some(r => r.name.includes('deepseek-ai')));
+  await updater.action({ action: 'plugins.dismiss', keys: reminders.map(r => r.key) });
+  assert.equal(updater.state().reminders.length, 0);
+  await updater.tick(); assert.equal(checks.length, 2);
+  const restored = new PluginUpdates({ service: updater.service, profile: updater.profile, lookup: updater.lookup, fetchImpl: updater.fetchImpl, stateFile: updater.stateFile, now: () => now });
+  await restored.load(); await restored.tick(); assert.equal(checks.length, 2); assert.equal(restored.state().reminders.length, 0);
+  now += 86400000;
+  restored.lookup = async () => ({ version: '1.2.0' });
+  await restored.tick(); await restored.flight;
+  assert.ok(restored.state().reminders.some(r => r.name === 'other-plugin'));
+  assert.ok(!restored.state().reminders.some(r => r.name === 'dsh-multi-router'), 'same Git SHA remains acknowledged');
+});
+
+test('cached update notices drop removed plugins and revalidate externally updated versions without network checks', async t => {
+  const { updater, bundles, checks, dir } = await fixture(t);
+  updater.stateFile = join(dir, 'updates.json'); await updater.tick(); await updater.flight;
+  assert.equal(updater.reminders().length, 3);
+  bundles.splice(bundles.findIndex(r => r.name === 'other-plugin'), 1);
+  bundles.find(r => r.name === 'disabled-plugin').version = '1.2.0-beta.1';
+  await updater.tick();
+  assert.deepEqual(updater.reminders().map(r => r.name), ['dsh-multi-router']); assert.equal(checks.length, 2);
+  updater.service = () => ({ listBundles: async () => { throw Error('profile unavailable'); } });
+  await assert.rejects(updater.tick(), /profile unavailable/);
+  assert.equal(checks.length, 2);
+});
+
+test('failed automatic lookups reserve their retry window across restarts and never produce notices', async t => {
+  const { updater, checks, dir } = await fixture(t);
+  updater.stateFile = join(dir, 'failed-updates.json'); let attempts = 0;
+  updater.lookup = updater.fetchImpl = async () => { attempts++; throw Error('offline'); };
+  await updater.tick(); await updater.flight; const before = attempts;
+  assert.equal(updater.reminders().length, 0);
+  await updater.load(); await updater.tick();
+  assert.equal(attempts, before); assert.equal(checks.length, 0);
+});

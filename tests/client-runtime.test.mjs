@@ -85,10 +85,15 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   assert.ok(Number.isNaN(module.usageDateBounds('custom', '', '')[0]));
   const usage = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.UsageDetails, { data: { accounts: [], routes: [], providers: [], options: { usageRetentionDays: 30 } } }));
   for (const label of ['今日', '近 3 日', '近 7 日', '近 30 日', '自定义', '保存保留期限']) assert.ok(usage.includes(label));
-  module.apply({ slots: { inject(name, fn) { assert.equal(name, 'plugins.bundle.config'); fn(); },
+  const allPool = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.AccountPool, { data: { ...poolData, providers: [{ id: 'workbuddy', name: 'WorkBuddy' }, { id: 'trae', name: 'Trae CN' }] }, provider: '' }));
+  assert.match(allPool, /其他供应商/); assert.match(allPool, /Trae CN/); assert.match(allPool, /WorkBuddy/);
+  const perf = module.performanceSummary([{ outcome: 'completed', timingSource: 'dsh-step', timing: { modelMs: 10000, ttftMs: 1000, toolMs: 3000, decodeTokens: 100, decodeMs: 2000 } }, { outcome: 'completed', timing: { modelMs: 30000, ttftMs: 3000, decodeTokens: 300, decodeMs: 10000 } }, { outcome: 'failed', timing: { modelMs: 999999 } }, { outcome: 'completed' }]);
+  assert.equal(perf.modelMs, 40000); assert.equal(perf.ttftMs, 2000); assert.equal(perf.toolMs, 3000); assert.equal(perf.tps, 400 / 12); assert.equal(module.performanceSummary([]).toolMs, null);
+  for (const label of ['模型用时', '工具调用用时', 'TTFT', 'TPS', '未经过 DSH 步骤']) assert.ok(usage.includes(label));
+  module.apply({ slots: { inject(name, fn) { assert.ok(['plugins.bundle.config', 'shell.overlay'].includes(name)); fn(); },
     register(options, component) { registered = { options, component }; } } });
-  assert.equal(registered.options.key, 'dsh-multi-router');
-  assert.equal(registered.component, module.RouterPage);
+  assert.equal(registered.options.key, 'dsh-multi-router-updates');
+  assert.equal(registered.component, module.UpdateReminder);
   await assert.rejects(module.readManagementResponse(new Response('', { status: 404 })), /插件后台未就绪（HTTP 404）/);
   await assert.rejects(module.readManagementResponse(new Response('<html>Not found</html>', { status: 503 })), /插件后台未就绪（HTTP 503）/);
   await assert.rejects(module.readManagementResponse(Response.json({ error: '配置冲突' }, { status: 409 })), /配置冲突/);

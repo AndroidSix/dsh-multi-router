@@ -15,7 +15,7 @@ const raw = { accounts: ['wb1', 'wb2', 'tr1', 'qd1'].map((id, i) => ({ id, name:
 await writePrivateJson(file, raw);
 const router = new Router(validateConfig(raw, file), async a => ({ models: async () => [
   { id: a.provider === 'qoder' ? 'dfmodel' : 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', contextWindow: 200000, maxTokens: 32000 },
-  { id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxTokens: 64000 },
+  { creditMultiplier: 0, reasoning: { supports: true, supportedEfforts: ['off', 'low', 'medium', 'high'], canDisableThinking: true }, id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxTokens: 64000 },
 ] , checkin: {
   identity: async () => ({ account: a.id, ...(a.provider === 'trae' ? { device: 'preview-official-device' } : {}) }),
   claim: async () => a.provider === 'workbuddy' ? { status: 'already-claimed', activity: { streakDays: 3, totalCredits: 150, nextStreakDay: 7, endsAt: Date.parse('2026-12-31T23:59:59+08:00') } } : process.env.DSH_PREVIEW_RETRY === '1' ? { status: a.provider === 'trae' ? 'retryable' : 'no-campaign' }
@@ -23,7 +23,7 @@ const router = new Router(validateConfig(raw, file), async a => ({ models: async
 } }));
 await writePrivateJson(join(dir, 'package.json'), { dependencies: { 'dsh-multi-router': 'github:AndroidSix/dsh-multi-router', 'dsh-git-panel': '^0.1.20', 'dsh-other-plugin': 'next' } });
 const previewBundles = [
-  { name: 'dsh-multi-router', version: '0.3.8', installed: true, removable: true, enabled: true },
+  { name: 'dsh-multi-router', version: '0.5.5', installed: true, removable: true, enabled: true },
   { name: 'dsh-git-panel', version: '0.1.20', installed: true, removable: true, enabled: true },
   { name: 'dsh-other-plugin', version: '1.0.0', installed: true, removable: true, enabled: false },
   { name: '@deepseek-ai/dsh-base', version: '0.2.0-rc.2', installed: false, removable: false, enabled: true },
@@ -42,21 +42,31 @@ for (const [i, a] of manager.config.accounts.entries()) await manager.telemetry.
   packages: [{ name: '活动积分', remaining: i === 0 ? 310 : i === 3 ? 300 : 0, total: 500, expiresAt: Date.now() + 2 * 86400000 }] });
 router.cooldowns.set('wb2:*', Date.now() + 300000);
 const clock = manager.telemetry.now;
+const metrics = new (await import('../src/telemetry.mjs')).SessionMetrics(manager.telemetry);
 for (const days of [15, 6, 2, 0]) {
   manager.telemetry.now = () => Date.now() - days * 86400000;
-  await manager.telemetry.record({ account: 'wb1', provider: 'workbuddy', alias: 'deepseek-v4.1-flash', model: 'deepseek-v4.1-flash', status: 200, ok: true,
+  const session = { id: `synthetic-session-${days}` };
+  const at = manager.telemetry.now(); metrics.event(session, { type: 'step/start', time: at - 16800, data: { turn: 0, step: 0 } });
+  const metadata = metrics.beginCall(session.id);
+  await manager.telemetry.record({ ...metadata, account: 'wb1', provider: 'workbuddy', alias: 'deepseek-v4.1-flash', model: 'deepseek-v4.1-flash', status: 200, ok: true,
     usage: { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200 } });
+  await metrics.event(session, { type: 'assistant/message', time: at, data: { turn: 0, step: 0, stream: [{ type: 'text-chunks', time0: at - 10000, dt: [], texts: ['合成内容，不保存'] }], usage: { outputTokens: 200 } } });
+  await metrics.event(session, { type: 'tool/call', time: at, data: { turn: 0, step: 0, callId: 'demo' } });
+  await metrics.event(session, { type: 'tool/result', time: at + 2250, data: { turn: 0, step: 0, message: { source: { callId: 'demo' } } } });
+  await metrics.event(session, { type: 'step/end', time: at + 2250, data: { turn: 0, step: 0 } });
 }
 manager.telemetry.now = clock;
+await manager.checkFreeModels(true);
+if (process.env.DSH_PREVIEW_UPDATES === '1') { manager.plugins.check(); await manager.plugins.flight; }
 
 
 const api = managementHandler(manager);
 const result = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
-import {RouterPage} from './src/client.jsx'; ${previewNow ? `Date.now = () => ${previewNow};` : ''} createRoot(document.getElementById('app')).render(React.createElement(RouterPage));`,
+import {RouterPage,UpdateReminder} from './src/client.jsx'; ${previewNow ? `Date.now = () => ${previewNow};` : ''} createRoot(document.getElementById('app')).render(React.createElement(React.Fragment,null,React.createElement(RouterPage),${process.env.DSH_PREVIEW_UPDATES === '1' ? 'React.createElement(UpdateReminder)' : 'null'}));`,
   resolveDir: process.cwd(), loader: 'jsx' }, bundle: true, platform: 'browser', format: 'esm', write: false, jsx: 'automatic' });
 const script = result.outputFiles[0].text;
 const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DSH Multi Router · 设置预览</title>
-<style>:root{--dsw-alias-label-primary:#ececf0;--dsw-alias-label-secondary:#b7b7c1;--dsw-alias-border-l2:#35353c;--dsw-alias-bg-layer-1:#202024;--dsw-alias-bg-module-platform:#18181c;--dsw-alias-state-active-primary:#3d73dc}body{margin:0;padding:32px;background:#111114;font:14px system-ui;color:#ececf0}#app{max-width:1040px;margin:auto}@media(max-width:700px){body{padding:16px}}</style><p style="color:#b7b7c1;text-align:center">合成账号预览 · 无真实领取${previewNow ? ' · 模拟北京时间 12:00' : ''}</p><div id="app"></div><script type="module" src="/app.js"></script></html>`;
+<style>:root{--dsw-alias-label-primary:#ececf0;--dsw-alias-label-secondary:#b7b7c1;--dsw-alias-border-l2:#35353c;--dsw-alias-bg-layer-1:#202024;--dsw-alias-bg-module-platform:#18181c;--dsw-alias-state-active-primary:#3d73dc}body{margin:0;padding:32px;background:#111114;font:14px system-ui;color:#ececf0}#app{max-width:1040px;margin:auto}@media(max-width:700px){body{padding:16px}}</style><p style="color:#b7b7c1;text-align:center">演示数据 · 账号已脱敏 · 无真实请求或领取${previewNow ? ' · 模拟北京时间 12:00' : ''}</p><div id="app"></div><script type="module" src="/app.js"></script></html>`;
 const server = createServer((req, res) => {
   if (req.url === MANAGEMENT_PATH) { void api(req, res); return; }
   res.writeHead(200, { 'Content-Type': req.url === '/app.js' ? 'text/javascript' : 'text/html' });

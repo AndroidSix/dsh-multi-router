@@ -35,7 +35,7 @@ test('first activation in a fresh home creates private config and a usable manag
   const file = join(dir, 'new-home', 'multi-router', 'router.json');
   let handler; const disposers = [], adapters = new Map();
   const effect = cb => disposers.push(cb());
-  const ctx = { get: () => undefined, effect, emit() {}, logger: { info() {}, warn() {}, error() {} },
+  const ctx = { on() {}, get: () => undefined, effect, emit() {}, logger: { info() {}, warn() {}, error() {} },
     inject(ids, cb) { cb({ effect, webServer: { register(options) { handler = options.handler; return () => {}; } } }); },
     llm: { registerAdapter(ids, adapter) { adapters.set(ids[0], adapter); return () => adapters.delete(ids[0]); } } };
   t.after(async () => { for (const dispose of disposers.reverse()) await dispose?.(); });
@@ -79,8 +79,8 @@ test('real DSH adapter streams through WorkBuddy account failover and unregister
   t.after(() => { globalThis.fetch = realFetch; });
   let adapter, dispose, released = false;
   const adapters = new Map();
-  const logs = [];
-  const ctx = { get: () => undefined, effect: cb => { dispose = cb(); }, emit: () => {},
+  const logs = [], listeners = {};
+  const ctx = { on(name, callback) { listeners[name] = callback; }, get: () => undefined, effect: cb => { dispose = cb(); }, emit: () => {},
     logger: { info: (...x) => logs.push(x.join(' ')), error: (...x) => logs.push(x.join(' ')) },
     llm: { registerAdapter(ids, value) { assert.equal(ids.length, 1); adapters.set(ids[0], value);
       if (ids[0] === 'multi-router') adapter = value; return () => { adapters.delete(ids[0]); if (ids[0] === 'multi-router') released = true; }; } } };
@@ -89,11 +89,21 @@ test('real DSH adapter streams through WorkBuddy account failover and unregister
   assert.equal(adapters.size, 7);
   assert.ok(!(await adapter.listModels('multi-router')).some(m => m.id === 'free')); // Legacy mixed Free is hidden.
   assert.equal(adapter.providerRetryPolicy('multi-router').maxRetries, 0);
-  const options = { provider: 'multi-router', model: 'ds4.1f', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], maxTokens: 16, signal: AbortSignal.timeout(10000) };
+  const options = { sessionId: 'private-test-session', provider: 'multi-router', model: 'ds4.1f', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], maxTokens: 16, signal: AbortSignal.timeout(10000) };
+  const session = { id: options.sessionId };
+  await listeners['session/event'](session, { type: 'step/start', time: 1000, data: { turn: 0, step: 0 } });
   const chunks = [];
   for await (const chunk of adapter.stream(options)) chunks.push(chunk);
   assert.ok(chunks.some(c => c.type === 'text-delta' && c.text === 'hello'), JSON.stringify(chunks));
   assert.deepEqual(calls, ['Bearer wb1', 'Bearer wb2']);
+  await listeners['session/event'](session, { type: 'assistant/message', time: 9000, data: { turn: 0, step: 0, stream: [{ type: 'text-chunks', time0: 3000, dt: [], texts: ['hello'] }], usage: { outputTokens: 30 } } });
+  await listeners['session/event'](session, { type: 'tool/call', time: 9100, data: { turn: 0, step: 0, callId: 'private-call', arguments: 'private-arguments' } });
+  await listeners['session/event'](session, { type: 'tool/result', time: 10100, data: { turn: 0, step: 0, message: { source: { callId: 'private-call' } } } });
+  await listeners['session/event'](session, { type: 'step/end', time: 10200, data: { turn: 0, step: 0 } });
+  const usage = JSON.parse(await readFile(join(dir, 'usage.json'), 'utf8'));
+  const measured = usage.events.find(e => e.outcome === 'completed');
+  assert.equal(measured.timingSource, 'dsh-step'); assert.equal(measured.timing.modelMs, 8000); assert.equal(measured.timing.toolMs, 1000); assert.equal(measured.timing.ttftMs, 2000);
+  assert.doesNotMatch(JSON.stringify(usage), /private-test-session|private-call|private-arguments/);
   for await (const chunk of adapter.stream(options)) { /* confirm sticky account through actual adapter */ }
   assert.deepEqual(calls, ['Bearer wb1', 'Bearer wb2', 'Bearer wb2']);
   const builtin = adapters.get('workbuddy');
@@ -133,7 +143,7 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
   };
   t.after(() => { globalThis.fetch = realFetch; });
   let dispose; const adapters = new Map();
-  const ctx = { get: () => undefined, effect: cb => { dispose = cb(); }, emit: () => {}, logger: { info() {}, warn() {}, error() {} },
+  const ctx = { on() {}, get: () => undefined, effect: cb => { dispose = cb(); }, emit: () => {}, logger: { info() {}, warn() {}, error() {} },
     llm: { registerAdapter(ids, value) { adapters.set(ids[0], value); return () => adapters.delete(ids[0]); } } };
   await apply(ctx, { configFile: file }); t.after(() => dispose?.());
   await adapters.get('workbuddy').listModels('workbuddy'); // Wait for the real account catalogs.

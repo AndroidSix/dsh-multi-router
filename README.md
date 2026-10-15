@@ -6,15 +6,17 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.5.4。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.5.5。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
-打开 **插件 → dsh-multi-router 的配置页**。默认进入总览，六个页签：
+打开 **插件 → dsh-multi-router 的配置页**。默认进入总览，八个页签：
 
 - **总览与用量**：今日/累计请求与 Token、近 7 日趋势、最近请求、三家平台余额与刷新时间。平台每分钟查询，面板每 15 秒刷新，可暂停面板自动刷新。
-- **Token 明细**：每次上游调用的时间、渠道、账号、路由、实际模型、输入/输出/总 Token 和结果；支持今日、近 3 日、近 7 日、近 30 日及自定义日期范围（北京时间自然日），并按账号、路由、结果筛选，每页 50 条。缓存输入和推理输出在平台返回时展示，不重复计入总量。默认滚动保留最近 30 × 24 小时，可设置 1–365 天，并随配置迁移。旧记录缺少的分项显示「—」。
-- **账号与登录**：启动时自动读取本机 WorkBuddy / Trae 已登录账号，每分钟重新检测；Trae 自动识别 CN / Global / SOLO，面板展示检测状态，并提供「重新检测本机登录」。添加账号弹窗也可一键获取；账号 ID 自动生成、显示名自动识别，重复账号会提示。Qoder 使用 PAT，可粘贴或获取本机旧连接器已保存的 PAT。新账号自动获取模型与平台用量。详情弹窗查看身份、认证类型、有效期、刷新能力、套餐与积分包；账号可命名、启停、排序和移出。
+- **Token 明细**：每次上游调用的时间、渠道、账号、路由、实际模型、输入/输出/总 Token 和结果；支持今日、近 3 日、近 7 日、近 30 日及自定义日期范围（北京时间自然日），并按账号、路由、结果筛选，每页 50 条。缓存输入和推理输出在平台返回时展示，不重复计入总量。默认滚动保留最近 30 × 24 小时，可设置 1–365 天，并随配置迁移。同时展示模型用时、工具调用用时、首 Token 平均（TTFT）和输出速度（TPS），可展开单次性能。DSH 步骤采用会话统计相同口径；TPS 按有效输出 Token / 解码秒数加权计算。性能汇总只包含成功调用，随当前筛选变化；旧记录缺少的分项显示「—」。
+- **账号与登录**：默认「全部供应商」集中展示所有账号，可按供应商 / 区域筛选、搜索、全选 / 全不选。启动时自动读取本机 WorkBuddy / Trae 已登录账号，每分钟重新检测；Trae 自动识别 CN / Global / SOLO，面板展示检测状态，并提供「重新检测本机登录」。添加账号弹窗也可一键获取；账号 ID 自动生成、显示名自动识别，重复账号会提示。Qoder 使用 PAT，可粘贴或获取本机旧连接器已保存的 PAT。新账号自动获取模型与平台用量。详情弹窗查看身份、认证类型、有效期、刷新能力、套餐与积分包；账号可命名、启停、排序和移出。
+- **积分签到**：按账号设置每日启动签到或定时签到（北京时间），保留每日执行记录、领取意图与设备限制，避免重复请求。
+- **插件更新**：仅检查用户安装的 GitHub / npm 插件，包含停用插件；每 24 小时自动检查，在 DSH 任意页面弹窗提醒新版本。同一更新点击关闭或「稍后处理」后不重复提醒，更高版本 / 新提交再次提醒。可在弹窗查看并手动更新；不自动安装。检查失败不冒充发现新版本，内置组件不检查、不展示。
 - **模型管理**：原始模型默认隐藏，只展示统一路由；提供所有渠道「全部展示」「全部隐藏（仅路由）」，作用于现有和以后发现的模型。可搜索、获取真实模型目录，修改显示名与单模型展示开关，每家独立保存。
 - **路由规则**：Free 免费路由排在首位，显示各账号当前免费模型与目录检查时间，支持立即检查。列表显示路由名称、切换策略和目标；新建/编辑打开二级弹窗。「添加模型预配置」可逐个添加或补齐全部三家预配置，不覆盖已有同 ID 路由。模型可从下拉列表选择，候选 ID 和上下文长度放在高级选项中。
 
@@ -28,17 +30,22 @@
 
 ### 界面预览
 
-| 总览与用量 | Token 明细 |
-| --- | --- |
-| 今日 / 累计 Token、账号池状态与三家平台余额 | 逐次上游调用、输入 / 输出分项与保留期限设置 |
-| ![总览与用量](docs/screenshots/overview-usage.jpg) | ![Token 明细](docs/screenshots/token-details.jpg) |
+以下为 **v0.5.5 实际面板 + 合成演示数据**。账号名称已替换，不包含真实手机号、邮箱、身份 ID、设备标识、登录凭证或会话内容；余额、用量和性能均为演示数值。
 
-| 路由规则 · Free 动态免费模型 | DSH 会话模型选择器 |
+| 总览与用量 | Token 明细与调用性能 |
 | --- | --- |
-| 六个渠道目标 + 按模型自动创建的免费路由 | 「统一路由」分组置顶 Free 与各预配置 |
-| ![路由规则与免费模型](docs/screenshots/routes-free-models.jpg) | ![模型选择器](docs/screenshots/model-picker.jpg) |
+| 今日 / 累计 Token、调用性能与平台余额 | 日期筛选、模型 / 工具用时、TTFT、TPS 与逐次明细 |
+| ![总览与用量](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/overview-usage.jpg) | ![Token 明细与调用性能](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/token-details.jpg) |
 
-> 截图取自作者本机环境，其中的账号 ID、积分余额与 Token 用量为**真实数值**（非凭证，不含任何 Token / PAT / 身份信息）。插件本身不记录、不上传凭证，凭证仅保存在本机 `~/.dsh/multi-router/`（权限 0600）。
+| 全部供应商账号池 | 路由规则与免费模型 |
+| --- | --- |
+| 所有平台集中展示，也可按供应商筛选 | 按免费模型动态生成路由，单独选择与设置推理等级 |
+| ![全部供应商账号池](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/accounts-all.jpg) | ![路由规则与免费模型](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/routes-free-models.jpg) |
+
+| 每日积分签到 | 全局插件更新提醒 |
+| --- | --- |
+| 启动 / 定时计划、按账号开启与状态去重 | GitHub / npm 用户插件、手动更新、同版本提醒去重 |
+| ![每日积分签到](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/checkins.jpg) | ![全局插件更新提醒](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/update-reminder.jpg) |
 
 ## 内置渠道与默认路由
 
@@ -144,7 +151,7 @@ dsh plugin --profile desktop add dsh-multi-router
 dsh plugin --profile web add dsh-multi-router
 ```
 
-包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.4`。
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.5`。
 
 已使用 npm 来源的用户更新：
 
@@ -201,7 +208,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.5.4.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.5.5.tgz
 ```
 
 ### 配置账号

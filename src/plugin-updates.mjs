@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
+import { writePrivateJson } from './config.mjs';
 import { parseWorkBuddyVersion, compareWorkBuddyVersions } from '../upstream/workbuddy/src/update.ts';
 
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
@@ -95,14 +96,41 @@ async function refreshGitPlugin(service, profile, row, options, signal) {
   }, { waitMs: 120000 });
 }
 export class PluginUpdates {
-  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin } = {}) {
+  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin, stateFile, now = Date.now } = {}) {
+    this.stateFile = stateFile; this.now = now; this.dismissed = {}; this.lastAttempt = 0; this.saveQueue = Promise.resolve();
     this.service = service; this.profile = profile; this.fetchImpl = fetchImpl;
     this.rows = []; this.abort = new AbortController();
     this.lookup = lookup;
     this.refreshGit = refreshGit;
   }
+  async load() {
+    const saved = this.stateFile && await jsonFile(this.stateFile);
+    if (saved?.version === 1) { this.lastAttempt = Number.isFinite(saved.lastAttempt) ? saved.lastAttempt : 0; this.checkedAt = saved.checkedAt; this.dismissed = saved.dismissed && typeof saved.dismissed === 'object' && !Array.isArray(saved.dismissed) ? saved.dismissed : {}; this.rows = Array.isArray(saved.rows) ? saved.rows.filter(r => ['github', 'npm'].includes(r.source?.kind)) : []; }
+  }
+  persist() {
+    if (!this.stateFile) return Promise.resolve();
+    const saved = structuredClone({ version: 1, lastAttempt: this.lastAttempt, checkedAt: this.checkedAt, dismissed: this.dismissed, rows: this.rows.filter(r => ['github', 'npm'].includes(r.source.kind)) });
+    this.saveQueue = this.saveQueue.catch(() => {}).then(() => writePrivateJson(this.stateFile, saved)); return this.saveQueue;
+  }
+  reminderKey(row) { return JSON.stringify([row.name, row.source, row.version, row.latestVersion ?? row.latestCommit]); }
+  reminders() { return this.rows.filter(r => r.status === 'available' && (!Object.hasOwn(this.dismissed, r.name) || this.dismissed[r.name] !== this.reminderKey(r))).map(r => ({ key: this.reminderKey(r), name: r.name, version: r.version, latestVersion: r.latestVersion, latestCommit: r.latestCommit })); }
+  async dismiss(keys) {
+    if (!Array.isArray(keys) || keys.length > 200 || keys.some(k => typeof k !== 'string')) throw Error('无效的提醒列表');
+    for (const row of this.reminders()) if (keys.includes(row.key)) Object.defineProperty(this.dismissed, row.name, { value: row.key, enumerable: true, configurable: true, writable: true });
+    await this.persist();
+  }
+  async tick() {
+    if (this.flight || !this.state().available) return;
+    // Revalidate cached notices against the local installed inventory, including
+    // removals and updates made through DSH or another plugin manager.
+    await this.list();
+    if (this.flight || this.now() >= this.lastAttempt && this.now() - this.lastAttempt < 86400000) return;
+    // Reserve before I/O: minute ticks and restarts cannot hammer failed sources.
+    this.lastAttempt = this.now(); await this.persist();
+    if (!this.flight && !this.abort.signal.aborted) this.check();
+  }
   state() { return { available: !!this.service()?.listBundles && !!this.profile()?.dir,
-    checkedAt: this.checkedAt, rows: this.rows.map(({ spec, ...row }) => ({ ...row, source: row.source.kind === 'unsupported' ? { kind: 'unsupported' } : row.source })), job: this.job, error: this.error }; }
+    checkedAt: this.checkedAt, reminders: this.reminders(), autoCheckHours: 24, rows: this.rows.map(({ spec, ...row }) => ({ ...row, source: row.source.kind === 'unsupported' ? { kind: 'unsupported' } : row.source })), job: this.job, error: this.error }; }
   async list() {
     const service = this.service(), profile = this.profile();
     if (!service?.listBundles || !profile?.dir) { this.rows = []; return; }
@@ -152,10 +180,11 @@ export class PluginUpdates {
     this.job = { id: randomUUID(), kind, state: 'running', startedAt: Date.now(), results: [], total: 0 };
     this.error = undefined;
     this.flight = Promise.resolve().then(() => task(this.job)).then(() => { this.job.state = this.job.cancelRequested ? 'cancelled' : 'done'; }, e => { this.job.state = this.job.cancelRequested ? 'cancelled' : 'failed'; this.job.message = e.message; })
-      .finally(() => { this.job.finishedAt = Date.now(); this.flight = undefined; });
+      .finally(async () => { this.job.finishedAt = Date.now(); try { await this.persist(); } catch { this.error = '更新检查记录未能保存，请检查本地目录权限'; } this.flight = undefined; });
   }
   check() {
     this.start('check', async job => {
+      this.lastAttempt = this.now(); await this.persist();
       await this.list();
       const rows = this.rows.filter(r => ['npm', 'github'].includes(r.source.kind)); job.total = rows.length;
       // Small pool keeps registry requests bounded without making one failed plugin stop the list.
@@ -232,6 +261,7 @@ export class PluginUpdates {
     if (!this.state().available) throw Error('当前 DSH 未提供插件管理接口，请升级 DSH 后重试');
     if (input.registry && !['https://registry.npmjs.org/', 'https://registry.npmmirror.com/'].includes(input.registry)) throw Error('无效的 npm 来源');
     if (input.action === 'plugins.list') { if (!this.flight) await this.list(); }
+    else if (input.action === 'plugins.dismiss') await this.dismiss(input.keys);
     else if (input.action === 'plugins.check') this.check();
     else if (input.action === 'plugins.update') this.update(input.names, input.registry);
     else if (input.action === 'plugins.install') this.install(input.spec, input.registry);
