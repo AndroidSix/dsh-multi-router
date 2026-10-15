@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { beijingDay, writePrivateJson } from './config.mjs';
 
-export const supportsCheckin = provider => ['trae', 'qoder', 'qoder-global'].includes(provider);
+export const supportsCheckin = provider => ['workbuddy', 'trae', 'qoder', 'qoder-global'].includes(provider);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const nextDay = now => Date.parse(`${beijingDay(now)}T00:00:00+08:00`) + 86400000;
 const evening = now => Date.parse(`${beijingDay(now)}T20:05:00+08:00`);
@@ -12,7 +12,7 @@ export function checkinFailure(error, submitted = false) {
   const status = error?.status ?? error?.failure?.status ?? Number(/\bhttp\s+(401|403|429)\b/i.exec(error?.message || '')?.[1]);
   if (status === 401) return { status: 'auth-invalid' };
   if ([403, 429].includes(status)) return { status: 'paused' };
-  if (/no valid refresh token is available/.test(error?.message || '')) return { status: 'auth-invalid' };
+  if (/no valid refresh token is available|no refresh token is stored/.test(error?.message || '')) return { status: 'auth-invalid' };
   return { status: submitted ? 'uncertain' : 'retryable' };
 }
 const canRetry = (record, now) => ['retryable', 'before-window'].includes(record.status)
@@ -56,7 +56,7 @@ export class Checkins {
         const last = rows.sort((a, b) => b.at - a.at)[0];
         const pause = this.data.pauses[a.provider];
         return { id: a.id, supported: supportsCheckin(a.provider), auto: a.autoCheckin === true,
-          paused: !!pause, last: last ? { day: last.day, at: last.at, status: last.status, amount: last.amount, retryAt: last.retryAt,
+          paused: !!pause, last: last ? { day: last.day, at: last.at, status: last.status, amount: last.amount, activity: last.activity, retryAt: last.retryAt,
             retryReady: canRetry(last, this.now()),
             message: checkinMessages[last.status] || checkinMessages.error } : undefined };
       }) };
@@ -161,7 +161,8 @@ export class Checkins {
       if (device && ['already-claimed', 'no-campaign', 'retryable', 'before-window', 'auth-invalid'].includes(record.status)) delete this.data.devices[device];
       if (record.attempts >= 2 || !['retryable', 'before-window'].includes(record.status)) delete record.retryAt;
       if (['claimed', 'already-claimed'].includes(record.status) && Number.isFinite(result.amount) && result.amount >= 0) record.amount = result.amount;
-      if (record.status === 'paused') this.data.pauses[account.provider] = { at: now };
+      if (result?.activity) record.activity = Object.fromEntries(['streakDays', 'totalCredits', 'nextStreakDay', 'endsAt'].filter(k => Number.isFinite(result.activity[k]) && result.activity[k] >= 0).map(k => [k, result.activity[k]]));
+      if (record.status === 'paused' || result?.paused === true) this.data.pauses[account.provider] = { at: now };
       await writePrivateJson(this.file, this.data);
       if (record.status === 'claimed') await this.manager.monitorAccount(account);
       return true;

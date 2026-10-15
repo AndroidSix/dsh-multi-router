@@ -5,8 +5,118 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Checkins } from '../src/checkins.mjs';
 import { writePrivateJson, validateConfig } from '../src/config.mjs';
-import { claimTraeCheckin, createAccountClient, createQoderCheckin } from '../lib/clients.js';
+import { claimTraeCheckin, createAccountClient, createQoderCheckin, createWorkBuddyCheckin, refreshWorkBuddyCheckinCredential } from '../lib/clients.js';
 import { exportConfiguration, decodeConfiguration } from '../src/migration.mjs';
+
+const wbToken = (sub = 'synthetic-wb-user', exp = Math.floor(Date.now() / 1000) + 3600) =>
+  [JSON.stringify({ alg: 'RS256' }), JSON.stringify({ iss: 'https://www.codebuddy.cn/auth/realms/copilot', sub, exp })]
+    .map(value => Buffer.from(value).toString('base64url')).concat('synthetic-signature').join('.');
+const wbCredential = () => ({ accessToken: wbToken(), uid: 'synthetic-wb-user', refreshToken: 'synthetic-refresh' });
+
+test('WorkBuddy checks status, binds CN login headers, claims once and displays only observed rewards and activity', async () => {
+  const credential = wbCredential(), calls = [];
+  const client = createWorkBuddyCheckin(async () => credential, { fetchImpl: async (url, options) => {
+    calls.push(url); assert.equal(options.method, 'POST'); assert.equal(options.body, '{}');
+    assert.equal(options.headers.Authorization, `Bearer ${credential.accessToken}`);
+    assert.equal(options.headers['X-User-Id'], credential.uid);
+    assert.equal(options.headers.Origin, 'https://www.workbuddy.cn');
+    assert.equal(options.headers.Referer, 'https://www.workbuddy.cn/profile/growth-center');
+    assert.ok(options.headers['User-Agent']);
+    return Response.json(url.endsWith('/daily-checkin') ? { code: 0, data: { credit: 50 } }
+      : { code: 0, data: { today_checked_in: calls.length > 1, active: true, streak_days: 3, total_credits: 150,
+        next_streak_day: 7, end_time: '2026-12-31 23:59:59' } });
+  }, now: () => Date.parse('2026-10-15T12:00:00+08:00') });
+  assert.deepEqual(await client.identity(), { account: credential.uid });
+  const result = await client.claim(AbortSignal.timeout(5000));
+  assert.equal(result.status, 'claimed'); assert.equal(result.amount, 50);
+  assert.deepEqual(result.activity, { streakDays: 3, totalCredits: 150, nextStreakDay: 7, endsAt: Date.parse('2026-12-31T23:59:59+08:00') });
+  assert.deepEqual(calls.map(url => url.split('/').at(-1)), ['checkin-activity-status', 'daily-checkin', 'checkin-activity-status']);
+});
+
+test('WorkBuddy skips already signed or ended campaigns, rejects malformed status and never guesses a reward', async () => {
+  for (const [data, expected] of [[{ today_checked_in: true }, 'already-claimed'], [{ active: false }, 'no-campaign'],
+    [{ today_checked_in: false, end_time: '2020-01-01 00:00:00' }, 'no-campaign'], [{}, 'retryable']]) {
+    let calls = 0;
+    const client = createWorkBuddyCheckin(wbCredential, { fetchImpl: async () => { calls++; return Response.json({ code: 0, data }); } });
+    assert.equal((await client.claim()).status, expected); assert.equal(calls, 1);
+  }
+  for (const [response, expected] of [[{ code: 200, data: {} }, 'claimed'],
+    [{ code: 1, msg: '今天已签到，请明天再来' }, 'already-claimed'], [{ code: 1, msg: '暂不可领取' }, 'paused'], [{ data: {} }, 'uncertain']]) {
+    let claims = 0;
+    const client = createWorkBuddyCheckin(wbCredential, { fetchImpl: async url => {
+      if (url.endsWith('/daily-checkin')) { claims++; return Response.json(response); }
+      return Response.json({ code: 0, data: { today_checked_in: false } });
+    } });
+    const result = await client.claim(); assert.equal(result.status, expected); assert.equal(claims, 1);
+    assert.equal(result.amount, undefined);
+  }
+  const invalid = createWorkBuddyCheckin(() => ({ ...wbCredential(), uid: 'different-user' }), { fetchImpl: () => assert.fail('invalid identity must never be sent') });
+  assert.equal((await invalid.claim()).status, 'auth-invalid');
+});
+
+test('WorkBuddy retries only read-only network/5xx failures with bounds, never uncertain claims or restrictions', async () => {
+  for (const failure of [500, 'network']) {
+    const waits = []; let calls = 0, claims = 0;
+    const client = createWorkBuddyCheckin(wbCredential, { sleep: async ms => { waits.push(ms); }, fetchImpl: async url => {
+      if (url.endsWith('/daily-checkin')) { claims++; throw Error('synthetic timeout with private-data'); }
+      calls++;
+      if (calls < 3) { if (failure === 'network') throw Error('network'); return new Response('', { status: failure }); }
+      return Response.json({ code: 0, data: { today_checked_in: false } });
+    } });
+    assert.equal((await client.claim()).status, 'uncertain'); assert.deepEqual(waits, [2000, 4000]); assert.equal(claims, 1);
+  }
+  for (const status of [401, 403, 429, 503]) {
+    let calls = 0, waits = [];
+    const client = createWorkBuddyCheckin(wbCredential, { sleep: async ms => { waits.push(ms); }, fetchImpl: async () => {
+      calls++; return new Response('', { status });
+    } });
+    assert.equal((await client.claim()).status, status === 401 ? 'auth-invalid' : status === 503 ? 'retryable' : 'paused');
+    assert.equal(calls, status === 503 ? 3 : 1); assert.deepEqual(waits, status === 503 ? [2000, 4000] : []);
+  }
+  let claims = 0;
+  const client = createWorkBuddyCheckin(wbCredential, { fetchImpl: async url => {
+    if (url.endsWith('/daily-checkin')) { claims++; return new Response('', { status: 503 }); }
+    return Response.json({ code: 0, data: { today_checked_in: false } });
+  } });
+  assert.equal((await client.claim()).status, 'uncertain'); assert.equal(claims, 1);
+});
+
+test('WorkBuddy refresh persists rotated AT/RT through the shared credential store and preserves account identity', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-wb-refresh-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'wb.json'), c = { ...wbCredential(), expiresAtMs: Date.now() - 1000, domain: 'https://copilot.tencent.com' };
+  await writePrivateJson(file, { version: 1, credential: c });
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  let requests = 0; const next = wbToken(c.uid, Math.floor(Date.now() / 1000) + 7200);
+  globalThis.fetch = async (url, options) => {
+    requests++; assert.equal(url, 'https://copilot.tencent.com/v2/plugin/auth/token/refresh');
+    assert.equal(options.headers['X-Refresh-Token'], c.refreshToken); assert.equal(options.headers['X-Auth-Refresh-Source'], 'plugin');
+    assert.equal(options.body, '{}');
+    return Response.json({ code: 0, data: { accessToken: next, refreshToken: 'synthetic-rotated-refresh' } });
+  };
+  const client = await createAccountClient({ provider: 'workbuddy', credentialFile: file }, {});
+  assert.deepEqual(await Promise.all([client.checkin.identity(), client.checkin.identity()]), [{ account: c.uid }, { account: c.uid }]);
+  assert.equal(requests, 1);
+  const stored = JSON.parse(await readFile(file)); assert.equal(stored.credential.accessToken, next);
+  assert.equal(stored.credential.refreshToken, 'synthetic-rotated-refresh'); assert.equal(stored.credential.uid, c.uid);
+  await assert.rejects(refreshWorkBuddyCheckinCredential(c, { fetchImpl: async () => Response.json({ code: 0, data: { accessToken: wbToken('other-user') } }) }), /HTTP 401/);
+  await writePrivateJson(file, { version: 1, credential: c });
+  globalThis.fetch = async () => new Response('', { status: 401 });
+  const rejected = await createAccountClient({ provider: 'workbuddy', credentialFile: file }, {});
+  assert.equal((await rejected.checkin.claim()).status, 'auth-invalid', 'store-wrapped refresh failures retain authentication classification');
+  assert.equal(validateConfig({ accounts: [{ id: 'wb', provider: 'workbuddy', credentialFile: 'x', autoCheckin: true }] }).accounts[0].autoCheckin, true);
+});
+
+test('WorkBuddy preserves accepted claims but stops the platform if the following status read is restricted', async t => {
+  let reads = 0;
+  const client = createWorkBuddyCheckin(wbCredential, { fetchImpl: async url => {
+    if (url.endsWith('/daily-checkin')) return Response.json({ code: 0, data: { credit: 50 } });
+    return ++reads === 1 ? Response.json({ code: 0, data: { today_checked_in: false } }) : new Response('', { status: 429 });
+  } });
+  const result = await client.claim(); assert.equal(result.status, 'claimed'); assert.equal(result.paused, true);
+  const f = await fixture(t, [{ id: 'first', provider: 'workbuddy' }, { id: 'second', provider: 'workbuddy' }], () => result);
+  await f.run(['first', 'second']); assert.deepEqual(f.calls, ['first']);
+  assert.equal(f.scheduler.state().accounts[0].last.status, 'claimed'); assert.equal(f.scheduler.state().accounts[1].paused, true);
+});
 
 async function fixture(t, accounts, claims = () => ({ status: 'claimed', amount: 100 })) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-checkin-')); t.after(() => rm(dir, { recursive: true, force: true }));
@@ -65,10 +175,10 @@ test('claim intent survives a crash, corrupt journals fail closed and concurrent
 });
 
 test('automatic catchup obeys the Beijing window, filters unsupported providers and validates preferences', async t => {
-  const f = await fixture(t, [{ id: 'one', provider: 'qoder', autoCheckin: true }, { id: 'wb', provider: 'workbuddy', autoCheckin: true }]);
+  const f = await fixture(t, [{ id: 'one', provider: 'qoder', autoCheckin: true }, { id: 'wb', provider: 'workbuddy-ai', autoCheckin: true }]);
   f.setNow('2026-10-15T09:59:00+08:00'); await f.run(undefined, true); assert.equal(f.calls.length, 0);
   f.setNow('2026-10-15T10:05:00+08:00'); await f.run(undefined, true); assert.deepEqual(f.calls, ['one']);
-  assert.throws(() => validateConfig({ accounts: [{ id: 'wb', provider: 'workbuddy', credentialFile: 'x', autoCheckin: true }] }), /autoCheckin/);
+  assert.throws(() => validateConfig({ accounts: [{ id: 'wb', provider: 'workbuddy-ai', credentialFile: 'x', autoCheckin: true }] }), /autoCheckin/);
 });
 
 test('Trae reads account/device eligibility before claiming and handles business restrictions without identity rotation', async () => {

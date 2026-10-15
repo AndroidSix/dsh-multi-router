@@ -42,11 +42,11 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   const updates = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.PluginUpdatesPanel, { data: { available: true, rows: [{ name: 'other-plugin', version: '1.0.0', enabled: false, source: { kind: 'npm', tag: 'latest' }, status: 'available', latestVersion: '1.1.0' }] } }));
   assert.match(updates, /other-plugin/); assert.match(updates, /停用/); assert.match(updates, /检查全部更新/);
   const checkins = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.CheckinPanel, { data: {
-    providers: [{ id: 'trae', name: 'Trae CN' }, { id: 'workbuddy', name: 'WorkBuddy' }],
-    accounts: [{ id: 'one', name: '日常账号', provider: 'trae', enabled: true }, { id: 'wb', provider: 'workbuddy', name: '工作账号' }],
+    providers: [{ id: 'trae', name: 'Trae CN' }, { id: 'workbuddy-ai', name: 'WorkBuddy AI' }],
+    accounts: [{ id: 'one', name: '日常账号', provider: 'trae', enabled: true }, { id: 'wb', provider: 'workbuddy-ai', name: '工作账号' }],
     checkins: { accounts: [{ id: 'one', supported: true, auto: false }, { id: 'wb', supported: false }] },
   } }));
-  assert.match(checkins, /每日自动签到/); assert.match(checkins, /WorkBuddy 暂未接入/);
+  assert.match(checkins, /每日自动签到/); assert.match(checkins, /WorkBuddy AI 暂未接入/);
   assert.match(checkins, /设备限制/); assert.match(checkins, /默认关闭/);
   assert.match(checkins, /20:05/);
   const masked = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.CheckinPanel, { data: {

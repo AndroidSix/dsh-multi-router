@@ -16,9 +16,9 @@ await writePrivateJson(file, raw);
 const router = new Router(validateConfig(raw, file), async a => ({ models: async () => [
   { id: a.provider === 'qoder' ? 'dfmodel' : 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', contextWindow: 200000, maxTokens: 32000 },
   { id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxTokens: 64000 },
-] , checkin: a.provider === 'workbuddy' ? undefined : {
+] , checkin: {
   identity: async () => ({ account: a.id, ...(a.provider === 'trae' ? { device: 'preview-official-device' } : {}) }),
-  claim: async () => process.env.DSH_PREVIEW_RETRY === '1' ? { status: a.provider === 'trae' ? 'retryable' : 'no-campaign' }
+  claim: async () => a.provider === 'workbuddy' ? { status: 'already-claimed', activity: { streakDays: 3, totalCredits: 150, nextStreakDay: 7, endsAt: Date.parse('2026-12-31T23:59:59+08:00') } } : process.env.DSH_PREVIEW_RETRY === '1' ? { status: a.provider === 'trae' ? 'retryable' : 'no-campaign' }
     : { status: 'claimed', amount: a.provider === 'trae' ? 100 : 50 },
 } }));
 await writePrivateJson(join(dir, 'package.json'), { dependencies: { 'dsh-multi-router': 'github:AndroidSix/dsh-multi-router', 'dsh-git-panel': '^0.1.20', 'dsh-other-plugin': 'next' } });
