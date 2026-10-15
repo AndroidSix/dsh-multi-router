@@ -130,7 +130,7 @@ export function CheckinPanel({ data, busy, act }) {
   const blocked = busy || info.running || !!info.error;
   const eligible = rows.filter(r => r.supported && !r.paused && data.accounts.find(a => a.id === r.id)?.enabled && (r.last?.day !== today || r.last?.retryReady));
   const ready = r => eligible.includes(r) && !beforeWindow;
-  const displayName = a => a?.name?.replace(/(1\d{2})\d{4}(\d{4})/g, '$1****$2');
+  const displayName = a => a?.name?.replace(/(?<!\d)(\+?\d{2,3})\d{3,8}(\d{4})(?!\d)/g, '$1****$2');
   const resultLabels = { claimed: '成功', 'already-claimed': '已领取', 'no-campaign': '无活动', retryable: '查询失败', 'before-window': '窗口未开', 'auth-invalid': '令牌失效', paused: '平台暂停', uncertain: '待核对', 'device-used': '设备已参与' };
   return <div className="stack"><section className="box stack"><div className="bar"><div><h3>每日积分签到</h3><p className="notice">{info.schedule}</p></div><button className="primary" disabled={blocked || beforeWindow || !eligible.length} onClick={() => { void act({ action: 'checkins.run', ids: eligible.map(r => r.id) }); }}>签到全部可用账号（{eligible.length}）</button></div>
     <p className="steps">自动签到默认关闭，按账号开启。先查领取状态、串行提交，账号间隔至少 10 秒；每个账号每天最多提交一次领取。确认尚未提交的查询失败，20:05 后最多补查一次；已领取、无活动和结果不明的账号跳过。遇到验证、限流或设备限制就停止，不会修改设备身份或切换账号重试。</p>

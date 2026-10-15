@@ -55,6 +55,13 @@ test('client bundle loads in the real DSH classic-script module loader and regis
       report: { at: 1792050000000, counts: { 'no-campaign': 1 } } },
   } }));
   assert.ok(!masked.includes('13800138000')); assert.match(masked, /138\*\*\*\*8000/); assert.match(masked, /无活动 1/);
+  for (const phone of ['08124036823', '+8613800138000', '+12025550123']) {
+    const html = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.CheckinPanel, { data: {
+      providers: [{ id: 'trae', name: 'Trae CN' }], accounts: [{ id: 'one', name: `用户${phone}`, provider: 'trae', enabled: true }],
+      checkins: { accounts: [{ id: 'one', supported: true }] },
+    } }));
+    assert.ok(!html.includes(phone)); assert.ok(html.includes('****'));
+  }
   module.apply({ slots: { inject(name, fn) { assert.equal(name, 'plugins.bundle.config'); fn(); },
     register(options, component) { registered = { options, component }; } } });
   assert.equal(registered.options.key, 'dsh-multi-router');
