@@ -8,6 +8,7 @@ export const supportsCheckin = provider => ['workbuddy', 'trae', 'qoder', 'qoder
 const hash = value => createHash('sha256').update(value).digest('hex');
 const nextDay = now => Date.parse(`${beijingDay(now)}T00:00:00+08:00`) + 86400000;
 const evening = now => Date.parse(`${beijingDay(now)}T20:05:00+08:00`);
+const windowAt = (a, now) => Date.parse(`${beijingDay(now)}T${a.provider.startsWith('qoder') ? '10:05' : '00:00'}:00+08:00`);
 export function checkinFailure(error, submitted = false) {
   const status = error?.status ?? error?.failure?.status ?? Number(/\bhttp\s+(401|403|429)\b/i.exec(error?.message || '')?.[1]);
   if (status === 401) return { status: 'auth-invalid' };
@@ -47,15 +48,35 @@ export class Checkins {
   async load() {
     try { await this.read(); } catch { this.failed = true; }
   }
+  get settings() { return this.manager.config.checkinSchedule ?? { mode: 'scheduled', time: '10:05' }; }
+  last(account) { return Object.values(this.data.records).filter(r => r.ids?.includes(account.id)).sort((a, b) => b.at - a.at)[0]; }
+  ready(account, now = this.now()) {
+    const last = this.last(account);
+    return account.enabled !== false && supportsCheckin(account.provider) && !this.data.pauses[account.provider]
+      && last?.status !== 'auth-invalid' && now >= windowAt(account, now)
+      && (last?.day !== beijingDay(now) || canRetry(last, now));
+  }
+  dueAt(account, now = this.now()) {
+    const scheduled = this.settings.mode === 'startup' ? '00:00' : this.settings.time;
+    return Math.max(windowAt(account, now), Date.parse(`${beijingDay(now)}T${scheduled}:00+08:00`));
+  }
+  tick() {
+    if (this.failed || this.flight || this.abort.signal.aborted) return;
+    const now = this.now();
+    // Poll only local state. Completed accounts never enter the I/O or upstream queue again that day.
+    const ids = this.manager.config.accounts.filter(a => a.autoCheckin === true && this.ready(a, now) && now >= this.dueAt(a, now)).map(a => a.id);
+    if (ids.length) this.start(ids, true);
+  }
   state() {
     return { running: !!this.flight, current: this.current, error: this.failed ? '签到记录无法读取，已停止签到；请修复记录文件后重启插件。' : undefined,
-      schedule: '北京时间 10:05 首次签到，20:05 仅补查可重试的失败；DSH 运行时执行，启动时补查',
+      settings: this.settings,
+      schedule: `${this.settings.mode === 'startup' ? '每日首次启动时签到，持续运行则新一天自动执行' : `北京时间每天 ${this.settings.time} 定时签到，错过时启动补查`}；20:05 仅补查未提交领取的失败`,
       report: this.data.report,
       accounts: this.manager.config.accounts.map(a => {
-        const rows = Object.values(this.data.records).filter(r => r.ids?.includes(a.id));
-        const last = rows.sort((a, b) => b.at - a.at)[0];
+        const last = this.last(a);
         const pause = this.data.pauses[a.provider];
         return { id: a.id, supported: supportsCheckin(a.provider), auto: a.autoCheckin === true,
+          ready: this.ready(a), scheduledAt: this.dueAt(a),
           paused: !!pause, last: last ? { day: last.day, at: last.at, status: last.status, amount: last.amount, activity: last.activity, retryAt: last.retryAt,
             retryReady: canRetry(last, this.now()),
             message: checkinMessages[last.status] || checkinMessages.error } : undefined };
@@ -65,7 +86,8 @@ export class Checkins {
     if (this.failed || this.abort.signal.aborted || this.flight) return;
     if (!automatic && (!Array.isArray(ids) || !ids.length || ids.length > 200 || ids.some(id => !this.manager.config.accounts.some(a => a.id === id)))) throw Error('请选择有效的签到账号');
     const selected = this.manager.config.accounts.filter(a => supportsCheckin(a.provider) && a.enabled !== false
-      && (automatic ? a.autoCheckin === true : ids.includes(a.id))).map(a => a.id);
+      && (automatic ? a.autoCheckin === true && (!ids || ids.includes(a.id)) : ids.includes(a.id)) && this.ready(a)
+      && (!automatic || this.now() >= this.dueAt(a))).map(a => a.id);
     if (!selected.length) return;
     this.flight = (async () => {
       let requested = false;
@@ -105,10 +127,11 @@ export class Checkins {
   }
   async run(account, automatic = false) {
     const now = this.now(), day = beijingDay(now);
-    if (now < Date.parse(`${day}T10:05:00+08:00`)) return false;
+    if (now < windowAt(account, now) || automatic && now < this.dueAt(account, now)) return false;
     return withFileLock(this.file, async () => {
       await this.read();
       if (this.abort.signal.aborted || this.data.pauses[account.provider]) return false;
+      if (this.last(account)?.status === 'auth-invalid') return false;
       const previousEntry = Object.entries(this.data.records).find(([, r]) => r.day === day && r.ids?.includes(account.id));
       const previous = previousEntry?.[1];
       if (previous && !canRetry(previous, now)) return false;
@@ -129,6 +152,7 @@ export class Checkins {
         if (!identity?.account || (account.provider === 'trae' && !identity.device)) throw Error('Missing check-in identity');
       } catch (error) {
         pending.status = checkinFailure(error).status;
+        if (pending.status !== 'retryable') delete pending.retryAt;
         if (pending.status === 'paused') this.data.pauses[account.provider] = { at: now };
         await writePrivateJson(this.file, this.data); return true;
       }

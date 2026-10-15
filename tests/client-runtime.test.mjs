@@ -39,8 +39,10 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   const welcome = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.InitialSetup, { data: { providers: [{ id: 'trae', name: 'Trae CN' }], localDiscovery: [{ provider: 'trae', state: 'found', savedCount: 1 }] } }));
   assert.match(welcome, /已保存 1 个/);
   assert.match(welcome, /一键获取并保存 WorkBuddy/);
-  const updates = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.PluginUpdatesPanel, { data: { available: true, rows: [{ name: 'other-plugin', version: '1.0.0', enabled: false, source: { kind: 'npm', tag: 'latest' }, status: 'available', latestVersion: '1.1.0' }] } }));
+  const updates = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.PluginUpdatesPanel, { data: { available: true, rows: [{ name: 'other-plugin', version: '1.0.0', enabled: false, source: { kind: 'npm', tag: 'latest' }, status: 'available', latestVersion: '1.1.0' }, { name: '@deepseek-ai/dsh-base', source: { kind: 'builtin' }, status: 'builtin' }] } }));
   assert.match(updates, /other-plugin/); assert.match(updates, /停用/); assert.match(updates, /检查全部更新/);
+  assert.ok(!updates.includes('@deepseek-ai/dsh-base')); assert.ok(!updates.includes('DSH 内置组件'));
+  assert.match(updates, /1 个用户安装插件/);
   const checkins = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.CheckinPanel, { data: {
     providers: [{ id: 'trae', name: 'Trae CN' }, { id: 'workbuddy-ai', name: 'WorkBuddy AI' }],
     accounts: [{ id: 'one', name: '日常账号', provider: 'trae', enabled: true }, { id: 'wb', provider: 'workbuddy-ai', name: '工作账号' }],
@@ -49,6 +51,7 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   assert.match(checkins, /每日自动签到/); assert.match(checkins, /WorkBuddy AI 暂未接入/);
   assert.match(checkins, /设备限制/); assert.match(checkins, /默认关闭/);
   assert.match(checkins, /20:05/);
+  assert.match(checkins, /每日启动时签到/); assert.match(checkins, /每天定时签到/); assert.match(checkins, /保存签到计划/);
   const masked = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.CheckinPanel, { data: {
     providers: [{ id: 'trae', name: 'Trae CN' }], accounts: [{ id: 'one', name: '用户13800138000', provider: 'trae', enabled: true }],
     checkins: { accounts: [{ id: 'one', supported: true, last: { status: 'retryable', day: '2026-10-15', message: '查询失败', retryAt: 1792065900000 } }],
@@ -62,6 +65,26 @@ test('client bundle loads in the real DSH classic-script module loader and regis
     } }));
     assert.ok(!html.includes(phone)); assert.ok(html.includes('****'));
   }
+  const poolData = { accounts: [
+    { id: 'one', name: '用户13800138000', provider: 'workbuddy', enabled: true, modelCount: 3, usage: { balance: { remaining: 3510, unit: 'credits', packages: [{ remaining: 310, expiresAt: Date.now() + 86400000 }] } } },
+    { id: 'two', name: '备用', provider: 'workbuddy', enabled: false, usage: { balance: { remaining: 3000, unit: 'credits', error: 'offline', packages: [{ remaining: 999, expiresAt: Date.now() + 86400000 }] } } },
+    { id: 'other', provider: 'trae', name: '其他供应商' },
+  ], checkins: { accounts: [{ id: 'one', supported: true }] } };
+  const pool = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.AccountPool, { data: poolData, provider: 'workbuddy' }));
+  assert.match(pool, /<table/); assert.match(pool, /scope="col"/); assert.match(pool, /310 积分 3 天内到期/);
+  assert.match(pool, /查询失败 · 保留上次余额/); assert.ok(!pool.includes('999 积分 3 天内到期'));
+  assert.match(pool, /全选/); assert.match(pool, /全不选/); assert.match(pool, /未入池/); assert.match(pool, /个目录模型/);
+  assert.ok(!pool.includes('其他供应商')); assert.ok(!pool.includes('13800138000'));
+  const rangeNow = Date.parse('2026-10-15T00:30:00+08:00');
+  assert.deepEqual(Array.from(module.usageDateBounds('1', '', '', rangeNow)), [Date.parse('2026-10-15T00:00:00+08:00'), Date.parse('2026-10-16T00:00:00+08:00')]);
+  for (const days of [3, 7, 30]) {
+    const [from, until] = module.usageDateBounds(String(days), '', '', rangeNow);
+    assert.equal(until - from, days * 86400000); assert.equal(until, Date.parse('2026-10-16T00:00:00+08:00'));
+  }
+  assert.deepEqual(Array.from(module.usageDateBounds('custom', '2026-10-01', '2026-10-03', rangeNow)), [Date.parse('2026-10-01T00:00:00+08:00'), Date.parse('2026-10-04T00:00:00+08:00')]);
+  assert.ok(Number.isNaN(module.usageDateBounds('custom', '', '')[0]));
+  const usage = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.UsageDetails, { data: { accounts: [], routes: [], providers: [], options: { usageRetentionDays: 30 } } }));
+  for (const label of ['今日', '近 3 日', '近 7 日', '近 30 日', '自定义', '保存保留期限']) assert.ok(usage.includes(label));
   module.apply({ slots: { inject(name, fn) { assert.equal(name, 'plugins.bundle.config'); fn(); },
     register(options, component) { registered = { options, component }; } } });
   assert.equal(registered.options.key, 'dsh-multi-router');

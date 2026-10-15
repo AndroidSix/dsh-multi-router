@@ -5,7 +5,7 @@ const day = at => new Date(at).toLocaleDateString('en-CA', { timeZone: 'Asia/Sha
 const safe = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
 const measured = n => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
 export class Telemetry {
-  constructor(file, now = Date.now) { this.file = file; this.now = now; this.retentionDays = 3; this.data = { accounts: {}, routes: {}, days: {}, rounds: {}, expiringRounds: {}, events: [] }; this.queue = Promise.resolve(); }
+  constructor(file, now = Date.now) { this.file = file; this.now = now; this.retentionDays = 30; this.data = { accounts: {}, routes: {}, days: {}, rounds: {}, expiringRounds: {}, events: [] }; this.queue = Promise.resolve(); }
   async load() {
     try { const saved = JSON.parse(await readFile(this.file, 'utf8')); if (saved.version !== 1) throw Error('Unsupported telemetry'); this.data = { ...saved, expiringRounds: saved.expiringRounds ?? {} }; }
     catch (e) { if (e.code !== 'ENOENT') throw e; }

@@ -108,16 +108,16 @@ export class PluginUpdates {
     if (!service?.listBundles || !profile?.dir) { this.rows = []; return; }
     const [manifest, bundles, lock] = await Promise.all([jsonFile(join(profile.dir, 'package.json')), service.listBundles(), locks(profile.dir)]);
     if (!manifest) throw Error('当前 DSH 配置的插件清单无法读取');
-    this.rows = bundles.filter(b => b.installed || b.version).map(b => {
+    this.rows = bundles.filter(b => (b.installed || b.version) && manifest.dependencies?.[b.name]
+      && b.removable !== false).map(b => {
       const spec = manifest.dependencies?.[b.name];
-      const source = !spec || b.removable === false && !b.readOnlyReason ? { kind: 'builtin' } : parsePluginSource(b.name, spec);
+      const source = parsePluginSource(b.name, spec);
       const npm = lock.npm?.packages?.[`node_modules/${b.name}`]?.resolved;
       const pnpm = lock.pnpm?.importers?.['.']?.dependencies?.[b.name]?.version;
       const installed = lock.preferNpm ? npm ?? pnpm : pnpm ?? npm;
       const previous = this.rows.find(r => r.name === b.name && r.spec === spec && r.version === b.version && r.commit === githubCommit(installed));
       return { ...previous, name: b.name, version: b.version, enabled: b.enabled, spec, source,
-        commit: githubCommit(installed), status: previous?.status ?? (source.kind === 'builtin' ? 'builtin' : source.kind === 'unsupported' ? 'unsupported' : 'unchecked'),
-        ...(source.kind === 'builtin' ? { message: 'DSH 自带 / 受保护组件，请通过更新 DeepSeek Harness 升级' } : {}),
+        commit: githubCommit(installed), status: previous?.status ?? (source.kind === 'unsupported' ? 'unsupported' : 'unchecked'),
         ...(source.kind === 'unsupported' ? { message: '本地文件 / 链接来源，请通过原安装方式更新' } : {}) };
     });
   }

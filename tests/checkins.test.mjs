@@ -197,12 +197,53 @@ test('Trae reads account/device eligibility before claiming and handles business
 });
 
 test('automatic check-in preferences migrate without daily claim journals or device identities', async () => {
-  const config = validateConfig({ accounts: [{ id: 'tr', provider: 'trae', credentialFile: 'unused.json', autoCheckin: true }], routes: {} });
+  const config = validateConfig({ checkinSchedule: { mode: 'scheduled', time: '18:30' }, accounts: [{ id: 'tr', provider: 'trae', credentialFile: 'unused.json', autoCheckin: true }], routes: {} });
   const document = await exportConfiguration({ config }, { includeCredentials: false });
   assert.equal(document.config.accounts[0].autoCheckin, true);
   const restored = await decodeConfiguration({ document: JSON.stringify(document) });
   assert.equal(restored.config.accounts[0].autoCheckin, true);
+  assert.deepEqual(restored.config.checkinSchedule, { mode: 'scheduled', time: '18:30' });
   assert.ok(!JSON.stringify(document).includes('records'));
+});
+
+test('startup scheduling checks once each day, waits for Qoder window and never requeues completed records', async t => {
+  const f = await fixture(t, ['workbuddy', 'trae', 'qoder'].map((provider, i) => ({ id: `a${i}`, provider, autoCheckin: true, ...(provider === 'trae' ? { device: 'synthetic-schedule-device' } : {}) })));
+  f.manager.config.checkinSchedule = { mode: 'startup', time: '10:05' };
+  f.setNow('2026-10-15T08:00:00+08:00'); f.scheduler.tick(); await f.scheduler.flight;
+  assert.deepEqual(f.calls, ['a0', 'a1']);
+  assert.equal(f.scheduler.state().accounts[2].ready, false);
+  let queueEntries = 0;
+  const run = f.scheduler.run.bind(f.scheduler); f.scheduler.run = (...args) => { queueEntries++; return run(...args); };
+  for (let i = 0; i < 100; i++) f.scheduler.tick();
+  assert.equal(queueEntries, 0, 'unchanged completed records do not enter the disk/upstream queue');
+  f.setNow('2026-10-15T10:05:00+08:00'); f.scheduler.tick(); await f.scheduler.flight;
+  assert.deepEqual(f.calls, ['a0', 'a1', 'a2']);
+  const restart = f.create(); await restart.load(); restart.tick(); await restart.flight;
+  assert.equal(f.calls.length, 3, 'restarting does not query/claim again');
+  f.manager.config.checkinSchedule = { mode: 'scheduled', time: '23:00' };
+  f.setNow('2026-10-15T23:00:00+08:00'); restart.tick(); await restart.flight; assert.equal(f.calls.length, 3);
+  f.manager.config.checkinSchedule.mode = 'startup';
+  f.setNow('2026-10-16T00:01:00+08:00'); restart.tick(); await restart.flight;
+  assert.deepEqual(f.calls, ['a0', 'a1', 'a2', 'a0', 'a1']);
+});
+
+test('scheduled check-ins catch up after the configured time, retries remain bounded and invalid auth stays stopped', async t => {
+  const f = await fixture(t, [{ id: 'failed', provider: 'workbuddy', autoCheckin: true }, { id: 'auth', provider: 'trae', device: 'synthetic-schedule-device', autoCheckin: true }],
+    a => ({ status: a.id === 'auth' ? 'auth-invalid' : 'retryable' }));
+  f.manager.config.checkinSchedule = { mode: 'scheduled', time: '18:30' };
+  f.setNow('2026-10-15T18:29:00+08:00'); f.scheduler.tick(); await f.scheduler.flight; assert.equal(f.calls.length, 0);
+  f.setNow('2026-10-15T19:00:00+08:00'); f.scheduler.tick(); await f.scheduler.flight; assert.deepEqual(f.calls, ['failed', 'auth']);
+  for (let i = 0; i < 100; i++) f.scheduler.tick();
+  assert.equal(f.calls.length, 2);
+  f.setNow('2026-10-15T20:05:00+08:00'); f.scheduler.tick(); await f.scheduler.flight; assert.deepEqual(f.calls, ['failed', 'auth', 'failed']);
+  for (let i = 0; i < 100; i++) f.scheduler.tick(); assert.equal(f.calls.length, 3);
+  f.setNow('2026-10-16T19:00:00+08:00'); f.scheduler.tick(); await f.scheduler.flight;
+  assert.deepEqual(f.calls, ['failed', 'auth', 'failed', 'failed'], 'expired credentials are not retried daily');
+  await f.scheduler.credentialsUpdated('auth'); f.scheduler.tick(); await f.scheduler.flight;
+  assert.equal(f.calls.at(-1), 'auth');
+  for (const schedule of [{ mode: 'invalid', time: '10:05' }, { mode: 'startup', time: '24:00' }, { mode: 'scheduled', time: '9:5' }, { mode: 'scheduled', time: '10:05', extra: true }]) {
+    assert.throws(() => validateConfig({ accounts: [], checkinSchedule: schedule }), /签到计划/);
+  }
 });
 
 test('Qoder check-in auth/metadata stops on the first HTTP restriction without refresh retries', async t => {

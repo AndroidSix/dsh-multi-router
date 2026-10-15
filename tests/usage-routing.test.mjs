@@ -132,7 +132,7 @@ test('request details keep every attempt for rolling days and prune without rese
     { input: 7, output: 3, tokens: 10, cachedInput: 2, reasoningOutput: 1, model: 'real-model' });
   const round = ledger.round('flash', 'signature'); round.number = 4;
   const expiry = ledger.expiring('flash'); expiry.cooldownUntil = time + 10 * 86400000;
-  time += 3 * 86400000;
+  time += 30 * 86400000;
   assert.equal(ledger.state().events.length, 81); // Exact boundary retained.
   await ledger.record({ ...event, usage: undefined, ok: false, status: 429 });
   assert.equal(ledger.state().events[0].tokens, null); assert.equal(ledger.state().events[0].input, null);
@@ -144,11 +144,11 @@ test('request details keep every attempt for rolling days and prune without rese
   assert.equal(ledger.round('flash', 'signature').number, 4);
   assert.equal(ledger.expiring('flash').cooldownUntil, expiry.cooldownUntil);
   assert.doesNotMatch(await readFile(file, 'utf8'), /private payload/);
-  const restored = new Telemetry(file, () => time + 4 * 86400000); await restored.load();
+  const restored = new Telemetry(file, () => time + 31 * 86400000); await restored.load();
   assert.equal(restored.state().events.length, 0);
   assert.equal(JSON.parse(await readFile(file, 'utf8')).events.length, 0);
   assert.equal(restored.count('flash', 'a').tokens, 810);
-  restored.configure(30); assert.equal(restored.state().events.length, 0); // Deleted data cannot reappear.
+  restored.configure(365); assert.equal(restored.state().events.length, 0); // Deleted data cannot reappear.
 });
 
 test('stream usage details include the actual selected model and retain zero / missing values honestly', async t => {

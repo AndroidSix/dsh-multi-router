@@ -29,11 +29,11 @@ async function fixture(t, overrides = {}) {
     refreshGit: async (service, profile, row, options) => service.installBundle(row.target, options) });
   return { dir, deps, bundles, calls, checks, service, updater };
 }
-test('all installed plugins are listed; npm channels and Git commit changes are checked, including disabled plugins', async t => {
+test('only user installed plugins are listed; npm channels and Git commit changes are checked, including disabled plugins', async t => {
   const { updater, checks } = await fixture(t);
   await updater.action({ action: 'plugins.check' }); await updater.flight;
   const { rows, job } = updater.state();
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 5);
   assert.equal(job.state, 'done');
   assert.deepEqual(checks.sort(), ['disabled-plugin@next', 'other-plugin@latest']);
   assert.equal(rows.find(r => r.name === 'disabled-plugin').status, 'available');
@@ -41,7 +41,7 @@ test('all installed plugins are listed; npm channels and Git commit changes are 
   assert.equal(git.status, 'available'); assert.equal(git.version, '1.0.0');
   assert.equal(git.latestCommit, latest, 'a Git update does not depend on package version changing');
   assert.equal(rows.find(r => r.name === 'pinned-plugin').status, 'pinned');
-  assert.equal(rows.find(r => r.name === '@deepseek-ai/dsh-base').status, 'builtin');
+  assert.equal(rows.some(r => r.name === '@deepseek-ai/dsh-base'), false);
   assert.equal(rows.find(r => r.name === 'local-plugin').status, 'unsupported');
   assert.equal(rows.some(r => 'spec' in r), false, 'internal source snapshots are not exposed');
 });
@@ -55,6 +55,18 @@ test('batch updates keep disabled selections, preserve Git branch tracking, and 
   assert.equal(calls[0].opts.enabled, false);
   assert.equal(calls[1].opts.enabled, true);
   assert.equal(updater.state().job.results.every(r => r.restartRequired), true);
+});
+
+test('bundled packages are excluded even with manifest entries; scoped user plugins and disabled installs remain', async t => {
+  const { updater, dir, deps, bundles, checks } = await fixture(t);
+  await writePrivateJson(join(dir, 'package.json'), { dependencies: { ...deps, '@deepseek-ai/dsh-base': '1.0.0', 'bundled-manager': '1.0.0', '@scope/user-plugin': '^1.0.0' } });
+  bundles[5].installed = true;
+  bundles.push({ name: 'bundled-manager', installed: true, removable: false, readOnlyReason: 'management-required', version: '1.0.0' },
+    { name: '@scope/user-plugin', installed: true, removable: true, enabled: false, version: '1.0.0' });
+  updater.check(); await updater.flight;
+  assert.ok(!updater.state().rows.some(r => r.name === '@deepseek-ai/dsh-base' || r.name === 'bundled-manager'));
+  assert.deepEqual(checks.sort(), ['@scope/user-plugin@latest', 'disabled-plugin@next', 'other-plugin@latest']);
+  assert.equal(updater.job.total, 5, 'only user npm/Git sources are queried; local and built-in packages are excluded');
 });
 test('failure is visible, other plugins continue, and changed install sources are refused', async t => {
   const { updater, service, dir, deps, calls } = await fixture(t);

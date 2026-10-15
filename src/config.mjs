@@ -110,9 +110,14 @@ export function validateConfig(raw, file = resolve('router.json')) {
   if (raw.retryServerErrors !== undefined && typeof raw.retryServerErrors !== 'boolean') throw new Error('Invalid retryServerErrors');
   if (raw.ignoredLocalAccounts !== undefined && (!Array.isArray(raw.ignoredLocalAccounts) || raw.ignoredLocalAccounts.some(k => typeof k !== 'string' || k.length > 1024))) throw new Error('Invalid ignoredLocalAccounts');
   if (raw.usageRetentionDays !== undefined && (!positive(raw.usageRetentionDays) || raw.usageRetentionDays > 365)) throw new Error('Token 明细保留天数必须为 1–365 的整数');
+  const checkinSchedule = raw.checkinSchedule ?? { mode: 'scheduled', time: '10:05' };
+  if (!object(checkinSchedule) || !['startup', 'scheduled'].includes(checkinSchedule.mode)
+    || !/^([01]\d|2[0-3]):[0-5]\d$/.test(checkinSchedule.time ?? '')
+    || Object.keys(checkinSchedule).some(k => !['mode', 'time'].includes(k))) throw new Error('签到计划必须选择启动或定时，并填写有效的北京时间（HH:mm）');
   return { ...raw, accounts, routes, models, modelVisibility, cooldownMs: raw.cooldownMs ?? 60000,
+    checkinSchedule: { ...checkinSchedule },
     requestTimeoutMs: raw.requestTimeoutMs ?? 300000, catalogTtlMs: raw.catalogTtlMs ?? 300000,
-    retryServerErrors: raw.retryServerErrors ?? false, usageRetentionDays: raw.usageRetentionDays ?? 3 };
+    retryServerErrors: raw.retryServerErrors ?? false, usageRetentionDays: raw.usageRetentionDays ?? 30 };
 }
 export async function readConfig(file) {
   return validateConfig(JSON.parse(await readFile(file, 'utf8')), resolve(file));

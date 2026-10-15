@@ -24,6 +24,33 @@ async function setup(t, accounts = ['wb1', 'wb2', 'tr1', 'qd1'].map((id, i) => (
   return { dir, file, manager, router, calls, act };
 }
 
+test('account pool bulk selection only changes its provider, preserves check-in opt-ins and validates revisions', async t => {
+  const { manager, act, file } = await setup(t);
+  await act({ action: 'account.update', id: 'wb1', autoCheckin: true });
+  const revision = manager.revision;
+  await act({ action: 'accounts.enabled', provider: 'workbuddy', enabled: false });
+  assert.ok(manager.config.accounts.filter(a => a.provider === 'workbuddy').every(a => !a.enabled));
+  assert.ok(manager.config.accounts.filter(a => a.provider !== 'workbuddy').every(a => a.enabled !== false));
+  assert.equal(manager.config.accounts.find(a => a.id === 'wb1').autoCheckin, true);
+  await assert.rejects(manager.action({ action: 'accounts.enabled', provider: 'workbuddy', enabled: true, revision }), /配置已更新/);
+  await assert.rejects(act({ action: 'accounts.enabled', provider: 'unknown', enabled: false }), /供应商/);
+  await assert.rejects(act({ action: 'accounts.enabled', provider: 'trae', enabled: 'false' }), /开关/);
+  await act({ action: 'accounts.enabled', provider: 'workbuddy', enabled: true });
+  assert.ok(JSON.parse(await readFile(file)).accounts.filter(a => a.provider === 'workbuddy').every(a => a.enabled));
+});
+
+test('check-in schedule saves with configuration revision, survives reload and keeps account opt-ins unchanged', async t => {
+  const { manager, file, act } = await setup(t);
+  const oldRevision = manager.revision;
+  await act({ action: 'checkins.settings', schedule: { mode: 'startup', time: '09:15' } });
+  assert.deepEqual(manager.state().checkins.settings, { mode: 'startup', time: '09:15' });
+  assert.deepEqual(JSON.parse(await readFile(file)).checkinSchedule, { mode: 'startup', time: '09:15' });
+  assert.ok(manager.config.accounts.every(a => !a.autoCheckin));
+  await assert.rejects(manager.action({ action: 'checkins.settings', schedule: { mode: 'scheduled', time: '12:00' }, revision: oldRevision }), /配置已更新/);
+  await assert.rejects(act({ action: 'checkins.settings', schedule: { mode: 'scheduled', time: '25:00' } }), /签到计划/);
+  await manager.load(); assert.equal(manager.checkins.settings.mode, 'startup');
+});
+
 test('Trae reasoning metadata is normalized and routes preserve all target capabilities', async t => {
   const { manager } = await setup(t);
   for (const account of manager.config.accounts) manager.catalogs.set(account.id, { models: [modelInfo({ id: 'real-model',
@@ -410,7 +437,7 @@ test('route creation generates stable internal IDs and name edits preserve sessi
 
 test('detail retention is configurable, persisted and migrated independently of cumulative usage', async t => {
   const { manager, file, router, act } = await setup(t);
-  assert.equal(manager.state().options.usageRetentionDays, 3);
+  assert.equal(manager.state().options.usageRetentionDays, 30);
   let time = Date.now() - 2 * 86400000; manager.telemetry.now = () => time;
   await manager.telemetry.record({ account: 'wb1', provider: 'workbuddy', alias: 'custom', ok: true, status: 200, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } });
   time += 2 * 86400000;

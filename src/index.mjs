@@ -37,12 +37,12 @@ export async function apply(ctx, options = {}) {
     await manager.load();
     await manager.syncLocalAccounts().catch(() => ctx.logger.warn('multi-router: local login discovery failed; manual import remains available'));
     await manager.finishInitialSetup().catch(() => ctx.logger.warn('multi-router: first-install guidance could not be saved'));
-    manager.checkins.start(undefined, true);
+    manager.checkins.tick();
     if (disposed) return;
     void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
     void manager.monitorAll().catch(() => ctx.logger.warn('multi-router: usage persistence failed'));
     monitorTimer = setInterval(() => { void manager.syncLocalAccounts().then(() => manager.monitorAll()).catch(() => ctx.logger.warn('multi-router: local login discovery or usage persistence failed'));
-      manager.checkins.start(undefined, true);
+      manager.checkins.tick();
       void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed')); }, 60000);
     monitorTimer.unref();
     for (const provider of ['multi-router', ...PROVIDERS]) {

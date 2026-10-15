@@ -38,6 +38,18 @@ const previewStarted = Date.now();
 if (previewNow) manager.checkins.now = () => previewNow + Date.now() - previewStarted;
 manager.localDiscovery = [{ provider: 'workbuddy', state: 'found', savedCount: 2 }, { provider: 'trae', state: 'found', savedCount: 1 }, { provider: 'trae-global', state: 'not-found', savedCount: 0 }];
 await Promise.all(['workbuddy', 'trae', 'qoder'].map(p => manager.ensureCatalog(p)));
+for (const [i, a] of manager.config.accounts.entries()) await manager.telemetry.observe(a.id, { unit: 'credits', remaining: [3510, 3086, 2302, 3782][i], fetchedAt: Date.now(),
+  packages: [{ name: '活动积分', remaining: i === 0 ? 310 : i === 3 ? 300 : 0, total: 500, expiresAt: Date.now() + 2 * 86400000 }] });
+router.cooldowns.set('wb2:*', Date.now() + 300000);
+const clock = manager.telemetry.now;
+for (const days of [15, 6, 2, 0]) {
+  manager.telemetry.now = () => Date.now() - days * 86400000;
+  await manager.telemetry.record({ account: 'wb1', provider: 'workbuddy', alias: 'deepseek-v4.1-flash', model: 'deepseek-v4.1-flash', status: 200, ok: true,
+    usage: { prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200 } });
+}
+manager.telemetry.now = clock;
+
+
 const api = managementHandler(manager);
 const result = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
 import {RouterPage} from './src/client.jsx'; ${previewNow ? `Date.now = () => ${previewNow};` : ''} createRoot(document.getElementById('app')).render(React.createElement(RouterPage));`,
@@ -48,7 +60,8 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name
 const server = createServer((req, res) => {
   if (req.url === MANAGEMENT_PATH) { void api(req, res); return; }
   res.writeHead(200, { 'Content-Type': req.url === '/app.js' ? 'text/javascript' : 'text/html' });
-  res.end(req.url === '/app.js' ? script : html);
+  const light = ':root{--dsw-alias-label-primary:#18191c;--dsw-alias-label-secondary:#62646c;--dsw-alias-border-l2:#dfe1e6;--dsw-alias-bg-layer-1:#f7f8fa;--dsw-alias-bg-module-platform:#ffffff;--dsw-alias-state-active-primary:#3864cb;--dsw-alias-state-success-primary:#167943;--dsw-alias-state-warning-primary:#986800;--dsw-alias-state-error-primary:#bf3030}body{background:#fff;color:#18191c}';
+  res.end(req.url === '/app.js' ? script : req.url.includes('theme=light') ? html.replace('</style>', light + '</style>') : html);
 });
 server.listen(0, '127.0.0.1', () => console.log(`http://127.0.0.1:${server.address().port}`));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {

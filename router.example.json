@@ -285,5 +285,5 @@
     "qoder": false,
     "qoder-global": false
   },
-  "usageRetentionDays": 3
+  "usageRetentionDays": 30
 }

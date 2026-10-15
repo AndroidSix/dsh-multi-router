@@ -448,6 +448,9 @@ export class Manager {
           }
           if (input.name !== undefined) account.name = input.name;
           if (input.enabled !== undefined) account.enabled = input.enabled;
+        } else if (input.action === 'accounts.enabled') {
+          if (!PROVIDERS.includes(input.provider) || typeof input.enabled !== 'boolean') bad('供应商或路由参与开关无效');
+          for (const a of raw.accounts.filter(a => a.provider === input.provider)) a.enabled = input.enabled;
         } else if (input.action === 'account.move') {
           if (!account || ![-1, 1].includes(input.direction)) bad('账号或顺序无效');
           const group = raw.accounts.filter(a => a.provider === account.provider), position = group.indexOf(account) + input.direction;
@@ -507,6 +510,10 @@ export class Manager {
           raw.routes[id] = structuredClone(ROUTE_PRESETS[id]);
         } else if (input.action === 'preset.add-all') {
           for (const [id, route] of Object.entries(ROUTE_PRESETS)) if (!Object.hasOwn(raw.routes, id)) raw.routes[id] = structuredClone(route);
+        } else if (input.action === 'checkins.settings') {
+          if (this.checkins.flight) bad('请等待当前签到完成后修改计划');
+          if (!input.schedule) bad('请填写签到计划');
+          raw.checkinSchedule = input.schedule;
         } else if (input.action === 'options.save') {
           for (const key of ['cooldownMs', 'requestTimeoutMs', 'retryServerErrors', 'usageRetentionDays']) if (input[key] !== undefined) raw[key] = input[key];
         } else bad('未知操作');
