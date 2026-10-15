@@ -29,7 +29,7 @@ const previewBundles = [
   { name: 'dsh-other-plugin', version: '1.0.0', installed: true, removable: true, enabled: false },
   { name: '@deepseek-ai/dsh-base', version: '0.2.0-rc.2', installed: false, removable: false, enabled: true },
 ];
-const previewService = { listBundles: async () => previewBundles, installBundle: async () => ({ application: 'restart-required', packageResult: { exitCode: 0 } }) };
+const previewService = { listBundles: async () => previewBundles, installBundle: async () => process.env.DSH_PREVIEW_INSTALL_ERROR ? { application: 'failed', error: { code: 'operation-error', diagnostic: 'EPERM: file is in use' } } : ({ application: 'restart-required', packageResult: { exitCode: 0 } }) };
 const manager = new Manager(file, router, () => {}, { service: () => previewService, profile: () => ({ dir }),
   lookup: async (s, p, spec) => ({ version: spec.startsWith('dsh-git-panel') ? '0.1.21' : '1.1.0-beta.1' }),
   fetchImpl: async url => {

@@ -25,7 +25,7 @@ const baseUrl = source ? new URL('../package.json', import.meta.url).href : path
 const metadata = registry.resolveMeta(entry.name, baseUrl);
 assert.ok(metadata, `DSH 未发现配置页面的前端模块；宿主入口：${entry.name}`);
 assert.equal(metadata.packageName, 'dsh-multi-router');
-assert.ok(metadata.meta.clientPath.endsWith('/lib/client.js'));
+assert.ok(metadata.meta.clientPath.endsWith(join('lib', 'client.js')));
 console.log(`PASS: ${entry.name} → dsh-multi-router 配置页前端模块`);
 
 // Exercise the actual host slot contracts, including the global list overlay.

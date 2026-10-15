@@ -32,7 +32,7 @@
 
 ### 界面预览
 
-以下为 **v0.5.9 实际面板 + 合成演示数据**。账号名称已替换，不包含真实手机号、邮箱、身份 ID、设备标识、登录凭证或会话内容；余额、用量和性能均为演示数值。
+以下主要页面已更新为 **v0.5.9 实际面板 + 合成演示数据**。账号名称已替换，不包含真实手机号、邮箱、身份 ID、设备标识、登录凭证或会话内容；余额、用量和性能均为演示数值。
 
 | 总览与用量 | Token 明细与调用性能 |
 | --- | --- |
@@ -48,6 +48,12 @@
 | --- | --- |
 | 启动 / 定时计划、按账号开启与状态去重 | GitHub / npm 用户插件、手动更新、同版本提醒去重 |
 | ![每日积分签到](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/checkins.jpg) | ![全局插件更新提醒](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/update-reminder.jpg) |
+
+| 模型管理 | 安装失败诊断 |
+| --- | --- |
+| ![模型管理](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/models-management.jpg) | ![脱敏安装诊断](https://raw.githubusercontent.com/AndroidSix/dsh-multi-router/main/docs/screenshots/update-diagnostic.jpg) |
+
+
 
 ## 内置渠道与默认路由
 
@@ -100,7 +106,7 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 
 ## 首次使用与账号自动获取
 
-第一次启用插件时会执行 WorkBuddy / WorkBuddy AI 与 Trae CN / Global / SOLO 的本机登录检测，将找到的有效登录保存为独立账号副本。首页会展示「本机账号自动获取」结果，区分已保存、未登录和无法读取，并提供「一键获取并保存」及手动添加入口；无需先逐个点击添加账号。之后每分钟检测新增登录，重复检测不重复添加，已停用和已删除的账号保持用户选择。Qoder 仍需添加 PAT。
+第一次启用插件时会执行 WorkBuddy / WorkBuddy AI 与 Trae CN / Global / SOLO 的本机登录检测，将找到的有效登录保存为独立账号副本。首页会展示「本机账号自动获取」结果，区分已保存、未登录和无法读取，并提供「一键获取并保存」及手动添加入口；无需先逐个点击添加账号。首次导入先比较已有账号、凭证缓存和移除记录；同一 Trae 账号的 CN / SOLO 客户端缓存合并去重，不按客户端版本重复建号。之后每分钟检测新增登录，重复检测不重复添加，已停用和已删除的账号保持用户选择。Qoder 仍需添加 PAT。
 
 ## 面板布局
 

@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { PROVIDERS, PROVIDER_NAMES, ROUTE_PRESETS, validateConfig, writePrivateJson, isFreeModel, beijingDay } from './config.mjs';
 import { modelWithCurrentPromotion } from '../upstream/workbuddy/src/upstream.ts';
-import { importAccount, readPortableCredential, discoverLocalAccounts, localAccountKey } from './accounts.mjs';
+import { importAccount, readPortableCredential, discoverLocalAccounts, localAccountKey, normalizeLocalAccountKey } from './accounts.mjs';
 import { hostIsLoopback } from '../upstream/workbuddy/src/loopback.ts';
 import { Telemetry } from './telemetry.mjs';
 import { jsonCredential } from './clients.mjs';
@@ -101,7 +101,7 @@ export class Manager {
         const saved = new Map();
         for (const item of discovered.accounts) {
           const key = localAccountKey(item.provider, item.document);
-          if (!force && raw.ignoredLocalAccounts?.includes(key)) continue;
+          if (!force && raw.ignoredLocalAccounts?.some(k => normalizeLocalAccountKey(k) === key)) continue;
           const config = validateConfig(raw, this.file);
           let existing, current;
           for (const a of config.accounts.filter(a => a.provider === item.provider)) {
@@ -129,7 +129,7 @@ export class Manager {
             if (existing) Object.assign(next.accounts.find(a => a.id === id), paths);
             else next.accounts.push({ id, provider: item.provider,
               name: item.document.credential.nickname || item.document.credential.accountName || item.document.credential.uid || item.document.credential.userId, ...paths });
-            next.ignoredLocalAccounts = (raw.ignoredLocalAccounts ?? []).filter(k => k !== key);
+            next.ignoredLocalAccounts = (raw.ignoredLocalAccounts ?? []).filter(k => normalizeLocalAccountKey(k) !== key);
             validateConfig(next, this.file);
             await writePrivateJson(this.file, next); raw = next; changed = true;
             recordSaved();

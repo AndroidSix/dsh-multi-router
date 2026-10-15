@@ -14,7 +14,11 @@ import { regionOfCredential } from '../upstream/trae/src/region.ts';
 const localKeyProviders = new Map();
 export const localAccountKey = (provider, document) => JSON.stringify([provider,
   document.credential?.uid || document.credential?.userId,
-  document.credential?.enterpriseId || '', document.credential?.edition || '']);
+  document.credential?.enterpriseId || '', provider.startsWith('trae') ? '' : document.credential?.edition || '']);
+export function normalizeLocalAccountKey(key) {
+  try { const parts = JSON.parse(key); if (Array.isArray(parts) && parts.length === 4 && ['trae', 'trae-global'].includes(parts[0])) { parts[3] = ''; return JSON.stringify(parts); } } catch { /* Preserve unknown legacy records. */ }
+  return key;
+}
 
 // Reuse the upstream readers, including WorkBuddy's environment overrides,
 // candidate fallback and encrypted desktop format. Never refresh/write upstream files.
@@ -48,7 +52,12 @@ export async function discoverLocalAccounts(provider) {
     }
     status.push({ provider: id, state: found ? 'found' : unreadable ? 'unreadable' : 'not-found' });
   }
-  return { accounts, status };
+  const identities = new Map();
+  for (const item of accounts) {
+    const key = localAccountKey(item.provider, item.document), previous = identities.get(key);
+    if (!previous || item.document.credential.expiresAtMs > previous.document.credential.expiresAtMs) identities.set(key, item);
+  }
+  return { accounts: [...identities.values()], status };
 }
 
 const pick = (value, keys) => Object.fromEntries(keys.filter(k => Object.hasOwn(value ?? {}, k)).map(k => [k, value[k]]));
