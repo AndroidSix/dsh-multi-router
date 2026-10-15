@@ -13,6 +13,16 @@ const wbToken = (sub = 'synthetic-wb-user', exp = Math.floor(Date.now() / 1000) 
     .map(value => Buffer.from(value).toString('base64url')).concat('synthetic-signature').join('.');
 const wbCredential = () => ({ accessToken: wbToken(), uid: 'synthetic-wb-user', refreshToken: 'synthetic-refresh' });
 
+test('WorkBuddy accepts both official CN issuers and keeps rejecting foreign issuers and mismatched identities', async () => {
+  for (const issuer of ['https://www.workbuddy.cn/auth/realms/copilot', 'https://www.codebuddy.cn/auth/realms/copilot', 'https://www.workbuddy.cn.attacker.test/auth/realms/copilot', 'https://www.workbuddy.ai/auth/realms/copilot']) {
+    const parts = wbToken().split('.'); const payload = JSON.parse(Buffer.from(parts[1], 'base64url')); payload.iss = issuer;
+    parts[1] = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const client = createWorkBuddyCheckin(() => ({ ...wbCredential(), accessToken: parts.join('.') }), { fetchImpl: () => assert.fail('identity decoding must stay local') });
+    if (['https://www.workbuddy.cn/auth/realms/copilot', 'https://www.codebuddy.cn/auth/realms/copilot'].includes(issuer)) assert.deepEqual(await client.identity(), { account: 'synthetic-wb-user' });
+    else await assert.rejects(client.identity(), /HTTP 401/);
+  }
+});
+
 test('WorkBuddy checks status, binds CN login headers, claims once and displays only observed rewards and activity', async () => {
   const credential = wbCredential(), calls = [];
   const client = createWorkBuddyCheckin(async () => credential, { fetchImpl: async (url, options) => {

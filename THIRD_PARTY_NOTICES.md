@@ -133,3 +133,34 @@ SOFTWARE.
 引入上述代码不构成对任何平台的授权。本项目**仅供个人学习研究**，解析客户端本地登录态或使用未公开接口可能违反对应平台服务条款，详见 [`DISCLAIMER.md`](./DISCLAIMER.md)。
 
 若你对本文件的完整性有疑问或发现遗漏，请提交 issue 或 PR。
+
+## WorkBuddy-Daily 登录流程参考
+
+- 项目：https://github.com/L0NE-6/WorkBuddy-Daily
+- 文件：`workbuddy_login.py`；MIT；Copyright (c) 2026 L0NE-6
+- 本插件以 JavaScript 重写其短信登录接口流程，并增加本机冷却、短期会话、凭证轮换保存；不运行 Python 脚本，不采用关闭 TLS 证书验证、成长任务、活跃模拟或抽奖逻辑。
+
+```text
+MIT License
+
+Copyright (c) 2026 L0NE-6
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```

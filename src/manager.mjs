@@ -17,6 +17,7 @@ import { routeReasoning, reasoningModes } from './reasoning.mjs';
 import { exportConfiguration, decodeConfiguration, migrationSummary, prepareMigration } from './migration.mjs';
 import { PluginUpdates } from './plugin-updates.mjs';
 import { Checkins, supportsCheckin } from './checkins.mjs';
+import { WorkBuddyLogin } from './workbuddy-login.mjs';
 
 export const MANAGEMENT_PATH = '/.well-known/dsh-multi-router';
 const revisionOf = raw => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
@@ -47,6 +48,7 @@ export class Manager {
     this.telemetry = new Telemetry(join(dirname(file), 'usage.json'));
     this.plugins = new PluginUpdates({ ...pluginAccess, stateFile: join(dirname(file), 'plugin-updates.json') });
     this.checkins = new Checkins(join(dirname(file), 'checkins.json'), this);
+    this.workbuddyLogin = new WorkBuddyLogin(join(dirname(file), 'workbuddy-login.json'), { fetchImpl: pluginAccess.fetchImpl });
     this.setupFile = join(dirname(file), 'initial-setup.json');
     router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a);
     router.prepareFree = () => this.checkFreeModels(true);
@@ -321,6 +323,35 @@ export class Manager {
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (input.action === 'workbuddy.sms') {
+      try { const workbuddyLogin = await this.workbuddyLogin.send(input.phone); return { ...this.state(), workbuddyLogin }; } catch (e) { bad(e.message); }
+    }
+    if (input.action === 'workbuddy.login') {
+      if (input.revision !== revisionOf(JSON.parse(await readFile(this.file, 'utf8')))) throw new ManagementError(409, '配置已更新，请刷新后重新提交登录');
+      let login; try { login = await this.workbuddyLogin.complete(input.challenge, input.code, input.verify ?? true); } catch (e) { bad(e.message); }
+      let existing;
+      for (const a of this.config.accounts.filter(a => a.provider === 'workbuddy')) {
+        try { if ((await jsonCredential(a.credentialFile)).credential.uid === login.document.credential.uid) { existing = a; break; } } catch { /* Preserve unreadable accounts. */ }
+      }
+      if (input.id && input.id !== existing?.id) bad('登录身份与正在编辑的账号不同，请从添加账号入口保存');
+      const state = await this.action({ action: existing ? 'account.credentials' : 'account.add', revision: input.revision,
+        id: existing?.id ?? `workbuddy_${randomBytes(8).toString('hex')}`, provider: 'workbuddy', name: input.name, document: login.document });
+      this.workbuddyLogin.finish();
+      return { ...state, loginResult: { warning: login.warning, saved: true } };
+    }
+    if (input.action === 'checkins.verify') {
+      const account = this.config.accounts.find(a => a.id === input.id && a.provider === 'workbuddy');
+      if (!account) bad('请选择 WorkBuddy 中国版账号');
+      if (this.checkins.flight || this.checkins.failed) bad('请等待签到完成，或先修复签到记录');
+      try { await this.workbuddyLogin.reserve('verifyAt', 30000); } catch (e) { bad(e.message); }
+      try {
+        const client = await this.router.client(account);
+        await client.checkin.validate(AbortSignal.timeout(30000));
+        await this.checkins.credentialsUpdated(account.id);
+        await this.readLogin(account);
+      } catch { bad('登录验证未通过：请在账号与登录中更新凭证；不会自动重试或领取'); }
+      return this.state();
+    }
     if (input.action === 'checkins.run') {
       try { this.checkins.start(input.ids); } catch (e) { bad(e.message); }
       return this.state();

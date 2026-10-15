@@ -31,7 +31,14 @@ const previewBundles = [
 const previewService = { listBundles: async () => previewBundles, installBundle: async () => ({ application: 'restart-required', packageResult: { exitCode: 0 } }) };
 const manager = new Manager(file, router, () => {}, { service: () => previewService, profile: () => ({ dir }),
   lookup: async (s, p, spec) => ({ version: spec.startsWith('dsh-git-panel') ? '0.1.21' : '1.1.0-beta.1' }),
-  fetchImpl: async () => Response.json({ sha: 'a'.repeat(40) }) });
+  fetchImpl: async url => {
+    if (String(url).includes('/v2/plugin/login/send-sms')) return Response.json({ code: 0, data: { expires_in: 300 } });
+    if (String(url).includes('/v2/plugin/login/token') || String(url).includes('/v2/plugin/auth/token/refresh')) {
+      const token = [{ alg: 'RS256' }, { sub: 'sms-preview-user', iss: 'https://www.workbuddy.cn/auth/realms/copilot', exp: Math.floor(Date.now() / 1000) + 7200 }].map(p => Buffer.from(JSON.stringify(p)).toString('base64url')).concat('synthetic-signature').join('.');
+      return Response.json({ code: 0, data: { accessToken: token, refreshToken: 'synthetic-preview-refresh' } });
+    }
+    return Response.json({ sha: 'a'.repeat(40) });
+  } });
 await manager.load(); await manager.finishInitialSetup();
 const previewNow = process.env.DSH_PREVIEW_CHECKINS === '1' ? Date.parse(`${beijingDay(Date.now())}T12:00:00+08:00`) : undefined;
 const previewStarted = Date.now();

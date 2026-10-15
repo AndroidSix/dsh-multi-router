@@ -206,18 +206,18 @@ export function createQoderCheckin(region, getPat, { fetchImpl = (...args) => fe
 }
 
 // The JWT is decoded only to bind this saved login to its uid and CN issuer; the server verifies its signature.
-function workbuddyToken(token) {
+export function workbuddyToken(token) {
   try {
     const [head, body, signature, extra] = token.split('.');
     const header = JSON.parse(Buffer.from(head, 'base64url')), payload = JSON.parse(Buffer.from(body, 'base64url'));
-    if (extra || !signature || header.alg !== 'RS256' || payload.iss !== 'https://www.codebuddy.cn/auth/realms/copilot'
+    if (extra || !signature || header.alg !== 'RS256' || !['https://www.codebuddy.cn/auth/realms/copilot', 'https://www.workbuddy.cn/auth/realms/copilot'].includes(payload.iss)
       || typeof payload.sub !== 'string' || !payload.sub) throw Error();
     return payload;
   } catch { throw Object.assign(Error('HTTP 401 invalid_workbuddy_cn_token'), { status: 401 }); }
 }
 async function workbuddyPost(url, headers, signal, fetchImpl) {
   let response;
-  try { response = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity', ...headers }, body: '{}', signal }); }
+  try { response = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity', ...headers }, body: '{}', signal, redirect: 'error' }); }
   catch { throw Object.assign(Error('workbuddy_checkin_network'), { transient: !signal?.aborted }); }
   if (!response.ok) throw Object.assign(Error(`HTTP ${response.status} workbuddy_checkin_http`), { status: response.status, transient: response.status >= 500 });
   const body = JSON.parse(await readLimitedText(response, 256 * 1024, 'Check-in'));
@@ -252,6 +252,11 @@ export function createWorkBuddyCheckin(credential, { fetchImpl = (...args) => fe
   };
   return {
     identity: async () => ({ account: (await login()).uid }),
+    validate: async signal => {
+      const state = await post('checkin-activity-status', await login(), signal);
+      if (![0, 200].includes(state?.code) || !state.data || typeof state.data.today_checked_in !== 'boolean') throw Error('workbuddy_status_invalid');
+      return { valid: true };
+    },
     claim: async signal => {
       let submitted = false;
       try {

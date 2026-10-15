@@ -22,6 +22,7 @@ export async function apply(ctx, options = {}) {
     if (manager) manager.closed = true;
     manager?.plugins.abort.abort();
     manager?.checkins.abort.abort();
+    manager?.workbuddyLogin.abort.abort();
     for (const release of releases) release();
     return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.checkins.flight, manager?.plugins.flight, manager?.plugins.saveQueue.catch(() => {}), manager?.telemetry.queue.catch(() => {})]);
   });
