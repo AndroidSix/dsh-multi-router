@@ -9,8 +9,8 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 const runtime = process.env.DSH_RUNTIME
   ?? '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh';
-const { ClientModuleRegistry } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js`);
-const { loadProfileDirectory, composeEntries } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`);
+const { ClientModuleRegistry } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js`).href);
+const { loadProfileDirectory, composeEntries } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`).href);
 const dir = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop');
 const source = process.argv.includes('--source');
 const parse = createRequire(`${runtime}/package.json`)('yaml').parse;
@@ -29,7 +29,7 @@ assert.ok(metadata.meta.clientPath.endsWith('/lib/client.js'));
 console.log(`PASS: ${entry.name} → dsh-multi-router 配置页前端模块`);
 
 // Exercise the actual host slot contracts, including the global list overlay.
-const { SlotCore } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-client-ui-slots/lib/index.js`);
+const { SlotCore } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-client-ui-slots/lib/index.js`).href);
 const slots = new SlotCore();
 const releaseRoot = slots.register({ name: 'root', children: {
   'plugins.bundle.config': { kind: 'keyed', scope: 'root' },

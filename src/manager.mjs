@@ -53,7 +53,7 @@ export class Manager {
     this.checkins = new Checkins(join(dirname(file), 'checkins.json'), this);
     this.workbuddyLogin = new WorkBuddyLogin(join(dirname(file), 'workbuddy-login.json'), { fetchImpl: pluginAccess.fetchImpl });
     this.setupFile = join(dirname(file), 'initial-setup.json');
-    router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a);
+    router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a, { maxAgeMs: 60000 });
     router.prepareFree = () => this.checkFreeModels(true);
     router.freeModels = account => this.freeModels(account);
 
@@ -153,8 +153,13 @@ export class Manager {
       await writePrivateJson(this.setupFile, this.setup);
     });
   }
-  async monitorAccount(account) {
+  async monitorAccount(account, { force = false, maxAgeMs = 300000 } = {}) {
     if (this.monitorFlights.has(account.id)) return this.monitorFlights.get(account.id);
+    const cached = this.telemetry.row('accounts', account.id).balance;
+    const last = cached?.error ? cached.attemptedAt : cached?.fetchedAt;
+    // Routing may need a fresher balance, but a failed lookup still backs off.
+    const ttl = cached?.error ? 300000 : maxAgeMs;
+    if (!force && Number.isFinite(last) && Date.now() >= last && Date.now() - last < ttl) return;
     const promise = (async () => {
       try {
         const client = await this.router.client(account);
@@ -172,7 +177,7 @@ export class Manager {
     })().finally(() => this.monitorFlights.delete(account.id));
     this.monitorFlights.set(account.id, promise); return promise;
   }
-  async monitorAll(provider) { await Promise.all(this.config.accounts.filter(a => !provider || a.provider === provider).map(a => this.monitorAccount(a))); }
+  async monitorAll(provider, options) { await Promise.all(this.config.accounts.filter(a => (!provider || a.provider === provider) && (options?.force || a.enabled !== false)).map(a => this.monitorAccount(a, options))); }
   freeAccounts() {
     const targets = Object.values(this.config.routes).filter(r => r.freeOnly).flatMap(r => r.targets);
     return this.config.accounts.filter(a => a.enabled !== false && targets.some(t => t.provider === a.provider && (!t.account || t.account === a.id)));
@@ -396,8 +401,8 @@ export class Manager {
     }
     if (input.action === 'monitor.refresh' || input.action === 'account.refresh') {
       if (input.provider && !PROVIDERS.includes(input.provider)) bad('未知供应商');
-      if (input.action === 'account.refresh') { const account = this.config.accounts.find(a => a.id === input.id); if (!account) bad('账号不存在'); this.router.clients.delete(account.id); await this.monitorAccount(account); }
-      else { await this.syncLocalAccounts(input.provider); await this.monitorAll(input.provider); }
+      if (input.action === 'account.refresh') { const account = this.config.accounts.find(a => a.id === input.id); if (!account) bad('账号不存在'); this.router.clients.delete(account.id); await this.monitorAccount(account, { force: true }); }
+      else { await this.syncLocalAccounts(input.provider); await this.monitorAll(input.provider, { force: true }); }
       return this.state();
     }
     if (input.action === 'accounts.discover') {

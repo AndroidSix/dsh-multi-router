@@ -8,6 +8,7 @@ import { Manager, managementHandler, MANAGEMENT_PATH } from '../lib/manager.js';
 import { validateConfig, writePrivateJson, DEFAULT_ROUTES, beijingDay } from '../src/config.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+const { version: pluginVersion } = JSON.parse(await readFile('package.json', 'utf8'));
 const dir = await mkdtemp(join(tmpdir(), 'multi-router-preview-'));
 const file = join(dir, 'router.json');
 const raw = { accounts: ['wb1', 'wb2', 'tr1', 'qd1'].map((id, i) => ({ id, name: ['主账号', '备用账号', 'Trae 日常账号', 'Qoder 账号'][i],
@@ -23,7 +24,7 @@ const router = new Router(validateConfig(raw, file), async a => ({ models: async
 } }));
 await writePrivateJson(join(dir, 'package.json'), { dependencies: { 'dsh-multi-router': 'github:AndroidSix/dsh-multi-router', 'dsh-git-panel': '^0.1.20', 'dsh-other-plugin': 'next' } });
 const previewBundles = [
-  { name: 'dsh-multi-router', version: '0.5.7', installed: true, removable: true, enabled: true },
+  { name: 'dsh-multi-router', version: pluginVersion, installed: true, removable: true, enabled: true },
   { name: 'dsh-git-panel', version: '0.1.20', installed: true, removable: true, enabled: true },
   { name: 'dsh-other-plugin', version: '1.0.0', installed: true, removable: true, enabled: false },
   { name: '@deepseek-ai/dsh-base', version: '0.2.0-rc.2', installed: false, removable: false, enabled: true },

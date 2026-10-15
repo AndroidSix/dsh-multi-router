@@ -519,3 +519,29 @@ test('Free daily discovery survives restart, checks midnight and excludes failed
   assert.deepEqual(restored.freeModels(restored.config.accounts.find(a => a.id === 'wb2')), []);
   assert.throws(() => validateConfig({ accounts: [], routes: { free: { ...ROUTE_PRESETS.free, preferExpiringCredits: true } } }));
 });
+
+test('background usage refresh reuses five-minute snapshots; explicit refresh remains immediate and GET stays local', async t => {
+  const { manager, router } = await setup(t, [{ id: 'wb1', provider: 'workbuddy', credentialFile: 'accounts/wb1.json' }]);
+  let requests = 0; manager.syncLocalAccounts = async () => {};
+  router.client = async () => ({ accountInfo: async () => { requests++; return { login: { state: 'valid' }, unit: 'credits', remaining: 100, fetchedAt: Date.now() }; } });
+  await manager.monitorAll(); await manager.monitorAll(); await manager.monitorAll();
+  assert.equal(requests, 1, 'minute ticks must not query platforms repeatedly inside the five-minute cache');
+  await manager.action({ action: 'monitor.refresh', revision: manager.revision });
+  assert.equal(requests, 2, 'manual refresh bypasses the cached snapshot');
+  const handler = managementHandler(manager);
+  await handler({ method: 'GET', headers: { host: 'localhost' }, socket: { remoteAddress: '127.0.0.1' } }, { writeHead() {}, end() {} });
+  assert.equal(requests, 2, 'panel polling reads local state only');
+  await manager.telemetry.observe('wb1', { unit: 'credits', remaining: 100, fetchedAt: Date.now() - 300001 });
+  await manager.monitorAll(); assert.equal(requests, 3);
+});
+
+test('failed usage checks back off and routing can request the stricter one-minute balance freshness', async t => {
+  const { manager, router } = await setup(t, [{ id: 'wb1', provider: 'workbuddy', credentialFile: 'accounts/wb1.json' }]);
+  const a = manager.config.accounts[0]; let requests = 0;
+  router.client = async () => ({ accountInfo: async () => { requests++; throw Error('synthetic network failure'); } });
+  await manager.monitorAll(); await manager.monitorAll(); assert.equal(requests, 1);
+  await manager.telemetry.observe(a.id, { unit: 'credits', remaining: 100, fetchedAt: Date.now() - 90000 });
+  router.client = async () => ({ accountInfo: async () => { requests++; return { login: { state: 'valid' }, unit: 'credits', remaining: 99, fetchedAt: Date.now() }; } });
+  await manager.monitorAll(); assert.equal(requests, 1);
+  await router.monitor(a); assert.equal(requests, 2, 'credit-based routing must retain its stricter freshness');
+});

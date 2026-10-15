@@ -54,3 +54,11 @@ test('failed reloads back off, and a user-disabled bundle is never re-enabled', 
   await writeFile(join(dir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: [] } } }));
   now += 60001; await reload.check(); assert.equal(calls, 2);
 });
+
+test('Windows CRLF patch files still activate the new host and settings without restarting', async t => {
+  const { reload, calls, pkg } = await fixture(t);
+  const patch = '- insert:\r\n    - id: llm-multi-router-v2-0.5.8\r\n      name: ./lib/host-v0.5.8.js\r\n';
+  await writeFile(join(pkg, 'cordis.patch.yml'), patch);
+  await reload.check();
+  assert.deepEqual(calls, [['dsh-multi-router', true]], 'Windows text line endings must not suppress live reload');
+});

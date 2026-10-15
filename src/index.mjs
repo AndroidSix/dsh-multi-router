@@ -37,7 +37,7 @@ export async function apply(ctx, options = {}) {
     manager = new Manager(file, router, () => {
       for (const wrapper of wrappers) wrapper.invalidate();
       ctx.emit('llm/adapters-updated');
-    }, { service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext') });
+    }, { service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext'), hmr: () => ctx.get('hmr') });
     await manager.load();
     if (disposed) return;
     manager.startup = { phase: 'discovering' };

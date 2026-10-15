@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 
 // Let DSH reconcile its profile; never alter the host's module caches. Release
 // specific host specifiers turn both its server and browser module generations.
@@ -20,7 +21,10 @@ export class PluginReload {
   state() { return { runningVersion: this.runningVersion, installedVersion: this.installedVersion, phase: this.phase, canReload: !!this.canReload(), message: this.message }; }
   start() {
     const dir = this.profile()?.dir;
-    if (dir) try { this.watcher = watch(dir, () => this.schedule()); this.watcher.unref(); } catch { /* Minute tick also detects CLI installs. */ }
+    this.watchers = [];
+    if (dir) for (const target of [dir, join(dir, 'node_modules')]) try {
+      const watcher = watch(target, () => this.schedule()); watcher.unref(); this.watchers.push(watcher);
+    } catch { /* Minute tick also detects unavailable directory watches. */ }
     this.schedule();
   }
   schedule(delay = 500) {
@@ -28,7 +32,7 @@ export class PluginReload {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => { void this.check().catch(() => {}); }, delay); this.timer.unref();
   }
-  stop() { this.closed = true; clearTimeout(this.timer); this.watcher?.close(); }
+  stop() { this.closed = true; clearTimeout(this.timer); for (const watcher of this.watchers ?? []) watcher.close(); }
   check() {
     if (this.closed) return Promise.resolve();
     if (this.flight) return this.flight;
@@ -51,8 +55,9 @@ export class PluginReload {
     if (this.busy()) { this.phase = 'waiting'; this.message = '新版本已安装，等待当前请求和账号操作结束后自动生效。'; this.schedule(1000); return; }
     const root = join(dir, 'node_modules/dsh-multi-router');
     try {
-      const patch = await readFile(join(root, 'cordis.patch.yml'), 'utf8');
-      if (!patch.includes(`id: llm-multi-router-v2-${installed.version}\n`) || !patch.includes(`name: ./lib/host-v${installed.version}.js`)) throw Error('legacy entry');
+      const patch = parse(await readFile(join(root, 'cordis.patch.yml'), 'utf8'));
+      const row = Array.isArray(patch) && patch.flatMap(p => p?.insert ?? []).find(e => e?.id === `llm-multi-router-v2-${installed.version}`);
+      if (row?.name !== `./lib/host-v${installed.version}.js` || row.disabled) throw Error('legacy entry');
       await readFile(join(root, `lib/host-v${installed.version}.js`));
     } catch { this.phase = 'restart-required'; this.message = '安装版本缺少版本化入口，重新安装最新版后再试。'; return; }
     if (this.now() < this.retryAt) return;

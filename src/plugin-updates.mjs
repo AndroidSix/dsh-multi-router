@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { writePrivateJson } from './config.mjs';
+import { outsideActivation } from './plugin-reload.mjs';
 import { parseWorkBuddyVersion, compareWorkBuddyVersions } from '../upstream/workbuddy/src/update.ts';
 
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
@@ -49,11 +50,29 @@ async function publicJson(url, fetchImpl, signal) {
   return /^[a-f0-9]{40}$/i.test(text) ? { sha: text } : JSON.parse(text);
 }
 const short = sha => sha?.slice(0, 8);
-async function registryVersion(service, profile, spec, signal) {
+const installFailed = r => !!(r.error || ['failed', 'cancelled'].includes(r.application) || r.packageResult && r.packageResult.exitCode !== 0);
+function installFailure(result) {
+  // Inspect locally; never send package-manager output, user paths or tokens to the panel.
+  const text = [result.error?.diagnostic, result.packageResult?.output, result.packageResult?.kind].filter(v => typeof v === 'string').join('\n');
+  let reason = 'unknown', message = '安装未完成；请在 DSH 原生插件页查看安装日志，或复制下方诊断信息。';
+  if (result.application === 'cancelled') { reason = 'cancelled'; message = '安装已取消，可重新检查后重试。'; }
+  else if (result.pendingBuilds?.length) { reason = 'build'; message = '依赖构建脚本需要授权，请到 DSH 插件安装页允许这些脚本后重试。'; }
+  else if (result.error?.code === 'incompatible-version') { reason = 'compatibility'; message = '插件与当前 DSH 不兼容，请先升级 DSH 或选择兼容版本。'; }
+  else if (/\b(?:EPERM|EBUSY|EACCES)\b|resource busy|file.*(?:locked|in use)/i.test(text)) { reason = 'files'; message = '插件文件被占用或目录权限不足，安装未完成。请先在 DSH 停用该插件后重试，并检查安装目录权限；仍被占用时需退出托盘应用。'; }
+  else if (/HMR transactions cannot be nested|activation|did not activate|entry.*activate/i.test(text)) { reason = 'activation'; message = '插件加载失败。请检查 DSH 插件页的组件错误，再关闭并重新启用；安装与加载是两个独立步骤。'; }
+  else if (result.packageResult?.timedOut || /\b(?:ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED)\b|network|fetch|download/i.test(text)) { reason = 'network'; message = '插件下载或网络请求失败，安装未完成。npm 来源可切换到「npm 官方」后重试；GitHub 来源请检查 GitHub 网络连接。'; }
+  const code = /\b(?:EPERM|EBUSY|EACCES|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED)\b/.exec(text)?.[0]
+    ?? (['operation-error', 'incompatible-version'].includes(result.error?.code) ? result.error.code : 'unknown');
+  return { status: 'failed', application: result.application, message, diagnostic: {
+    reason, code, platform: process.platform, stage: reason === 'activation' ? 'activation' : 'install',
+    ...(Number.isInteger(result.packageResult?.exitCode) ? { exitCode: result.packageResult.exitCode } : {}),
+  } };
+}
+async function registryVersion(service, profile, spec, signal, requestedRegistry) {
   const require = createRequire(profile.installAnchor);
   const { viewProfilePackage } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-plugin-manager/operations')).href);
   const { registryPlan } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-plugin-manager/registry')).href);
-  for (const registry of registryPlan(undefined, await service.registries())) {
+  for (const registry of registryPlan(requestedRegistry, await service.registries())) {
     const answer = await viewProfilePackage(profile.dir, spec, { ...profile.packageManager, registry, timeoutMs: 12000, signal });
     if (signal.aborted) throw Error('检查已取消');
     if (answer.exitCode !== 0) continue;
@@ -96,9 +115,9 @@ async function refreshGitPlugin(service, profile, row, options, signal) {
   }, { waitMs: 120000 });
 }
 export class PluginUpdates {
-  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin, onInstalled, stateFile, now = Date.now } = {}) {
+  constructor({ service = () => undefined, profile = () => undefined, hmr = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin, onInstalled, stateFile, now = Date.now } = {}) {
     this.stateFile = stateFile; this.now = now; this.dismissed = {}; this.lastAttempt = 0; this.saveQueue = Promise.resolve();
-    this.service = service; this.profile = profile; this.fetchImpl = fetchImpl;
+    this.service = service; this.profile = profile; this.hmr = hmr; this.fetchImpl = fetchImpl;
     this.rows = []; this.abort = new AbortController();
     this.lookup = lookup;
     this.refreshGit = refreshGit;
@@ -208,12 +227,8 @@ export class PluginUpdates {
       this.gitAbort = new AbortController();
       try { result = await this.refreshGit(this.service(), this.profile(), row, options, AbortSignal.any([this.abort.signal, this.gitAbort.signal])); }
       finally { this.gitAbort = undefined; }
-    } else result = await this.service().installBundle(row.target, options);
-    if (result.packageResult && result.packageResult.exitCode !== 0 || ['failed', 'cancelled'].includes(result.application) || result.error) {
-      return { name: row.name, status: 'failed', application: result.application,
-        message: result.pendingBuilds?.length ? '依赖构建脚本需要授权，请到 DSH 插件安装页允许这些脚本后重试' : result.error?.code === 'incompatible-version' ? '插件与当前 DSH 不兼容，请先升级 DSH 或选择兼容版本' : `安装未完成（${result.error?.code ?? result.packageResult?.kind ?? 'unknown'}）；请到 DSH 插件页查看安装日志`,
-        pendingBuilds: result.pendingBuilds ?? [], logPath: result.packageResult?.logPath };
-    }
+    } else result = await outsideActivation(this.hmr(), () => this.service().installBundle(row.target, options));
+    if (installFailed(result)) return { name: row.name, ...installFailure(result), expectedVersion: row.latestVersion };
     const installed = (await this.service().listBundles()).find(b => b.name === row.name);
     if (row.source.kind === 'npm' && installed?.version !== row.latestVersion) return { name: row.name, status: 'failed',
       message: `实际安装版本 ${installed?.version ?? '未知'} 与检查版本 ${row.latestVersion} 不同；请稍后重新检查，可能是镜像尚未同步或发行时间限制` };
@@ -253,7 +268,22 @@ export class PluginUpdates {
     if (github.kind !== 'github' && npm?.kind !== 'npm') throw Error('仅支持 npm 包名 / 版本或 github:用户/仓库');
     this.start('install', async job => {
       job.total = 1; job.current = spec;
-      const result = await this.service().installBundle(spec, { requestId: job.id, ...(registry ? { registry } : {}) });
+      // Resolve before installation and verify afterwards: a stale mirror must
+      // not silently turn "latest" into an older successful installation.
+      let expected;
+      if (npm?.kind === 'npm' && github.kind !== 'github') {
+        const found = await this.lookup(this.service(), this.profile(), `${npm.package}@${named[2] || 'latest'}`, this.abort.signal, registry);
+        if (!parseWorkBuddyVersion(found.version)) throw Error('npm 未返回有效版本，请检查安装源后重试');
+        expected = found.version;
+      }
+      const result = await outsideActivation(this.hmr(), () => this.service().installBundle(spec, { requestId: job.id, ...(registry ? { registry } : {}) }));
+      if (installFailed(result)) { job.results.push({ name: result.bundle ?? spec, ...installFailure(result), expectedVersion: expected }); delete job.current; await this.list(); return; }
+      const installed = (await this.service().listBundles()).find(b => b.name === (result.bundle ?? named?.[1]));
+      if (expected && installed?.version !== expected) {
+        job.results.push({ name: result.bundle ?? named[1], status: 'failed', expectedVersion: expected, installedVersion: installed?.version,
+          message: `实际安装版本 ${installed?.version ?? '未知'} 与检查版本 ${expected} 不同；请切换「npm 官方」后重新检查并安装指定版本。` });
+        delete job.current; await this.list(); return;
+      }
       const reloadPending = !result.error && result.packageResult?.exitCode === 0 && result.application === 'restart-required' && this.onInstalled?.(result.bundle) === true;
       job.results.push({ name: result.bundle ?? spec, status: result.error || ['failed', 'cancelled'].includes(result.application) || result.packageResult && result.packageResult.exitCode !== 0 ? 'failed' : 'installed',
         message: result.error ? `安装未完成（${result.error.code}），请查看 DSH 插件安装日志` : reloadPending ? '已安装，等待当前操作结束后自动加载' : result.application === 'restart-required' ? '已安装，请完全退出并重启 DSH' : '安装完成',

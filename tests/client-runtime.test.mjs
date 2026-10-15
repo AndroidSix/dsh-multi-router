@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 test('published host entry is discovered by the real DSH client registry', t => {
-  const electron = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness';
+  const electron = process.env.DSH_RUNTIME ? process.execPath : '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness';
   if (!existsSync(electron)) { t.skip('Installed DSH desktop runtime is required'); return; }
   const result = spawnSync(electron, ['--expose-internals', fileURLToPath(new URL('../scripts/check-client-discovery.mjs', import.meta.url)), '--source'],
     { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', timeout: 10000 });
@@ -16,7 +16,7 @@ test('published host entry is discovered by the real DSH client registry', t => 
 });
 
 test('official DSH lifecycle replaces server and browser module generations without a process restart', t => {
-  const electron = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness';
+  const electron = process.env.DSH_RUNTIME ? process.execPath : '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness';
   if (!existsSync(electron)) { t.skip('Installed DSH desktop runtime is required'); return; }
   const result = spawnSync(electron, ['--expose-internals', fileURLToPath(new URL('../scripts/check-live-reload.mjs', import.meta.url))],
     { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', timeout: 10000 });

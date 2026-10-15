@@ -7,10 +7,10 @@ import { pathToFileURL } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { outsideActivation } from '../src/plugin-reload.mjs';
 const runtime = process.env.DSH_RUNTIME ?? '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh';
-const { boot, loadProfileDirectory, readProfilePatches } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`);
-const { ClientModuleRegistry } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js`);
-const { default: Hmr } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-hmr/lib/index.js`);
-const { PluginManager } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js`);
+const { boot, loadProfileDirectory, readProfilePatches } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`).href);
+const { ClientModuleRegistry } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js`).href);
+const { default: Hmr } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-hmr/lib/index.js`).href);
+const { PluginManager } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js`).href);
 const dir = await mkdtemp(join(tmpdir(), 'dsh-live-reload-'));
 let ctx;
 try {
@@ -25,7 +25,7 @@ try {
     await writeFile(join(pkg, 'lib/index.js'), host);
     await writeFile(join(pkg, 'lib/client.js'), `window.__ModuleLoader__.load({id:'dsh-multi-router',factory:()=>({fixtureVersion:'${version}'})});`);
     // Start with the legacy entry to prove migration also avoids a process restart.
-    await writeFile(join(pkg, 'cordis.patch.yml'), `- insert:\n    - id: llm-multi-router-v2-${version}\n      name: ${version === '1.0.0' ? 'dsh-multi-router' : `./lib/host-v${version}.js`}\n`);
+    await writeFile(join(pkg, 'cordis.patch.yml'), `- insert:\n    - id: llm-multi-router-v2-${version}\n      name: ${version === '1.0.0' ? 'dsh-multi-router' : `./lib/host-v${version}.js`}\n`.replace(/\n/g, '\r\n'));
   };
   await generation('1.0.0');
   const profile = { ...loadProfileDirectory('dsh', dir, `${runtime}/package.json`), home: dir, installAnchor: `${runtime}/package.json`, overlays: [] };

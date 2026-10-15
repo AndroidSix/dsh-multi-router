@@ -6,13 +6,13 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.5.8。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.5.9。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
 打开 **插件 → dsh-multi-router 的配置页**。默认进入总览，八个页签：
 
-- **总览与用量**：今日/累计请求与 Token、近 7 日趋势、最近请求、三家平台余额与刷新时间。平台每分钟查询，面板每 15 秒刷新，可暂停面板自动刷新。
+- **总览与用量**：今日/累计请求与 Token、近 7 日趋势、最近请求、三家平台余额与刷新时间。平台余额后台每 5 分钟查询，面板每分钟读取本机缓存，隐藏页面暂停轮询，可关闭自动刷新；手动刷新平台用量会立即查询。
 - **Token 明细**：每次上游调用的时间、渠道、账号、路由、实际模型、输入/输出/总 Token 和结果；支持今日、近 3 日、近 7 日、近 30 日及自定义日期范围（北京时间自然日），并按账号、路由、结果筛选，每页 50 条。缓存输入和推理输出在平台返回时展示，不重复计入总量。默认滚动保留最近 30 × 24 小时，可设置 1–365 天，并随配置迁移。同时展示模型用时、工具调用用时、首 Token 平均（TTFT）和输出速度（TPS），可展开单次性能。DSH 步骤采用会话统计相同口径；TPS 按有效输出 Token / 解码秒数加权计算。性能汇总只包含成功调用，随当前筛选变化；旧记录缺少的分项显示「—」。
 - **账号与登录**：默认「全部供应商」集中展示所有账号，可按供应商 / 区域筛选、搜索、全选 / 全不选。启动时自动读取本机 WorkBuddy / Trae 已登录账号，每分钟重新检测；Trae 自动识别 CN / Global / SOLO，面板展示检测状态，并提供「重新检测本机登录」。添加账号弹窗也可一键获取；账号 ID 自动生成、显示名自动识别，重复账号会提示。Qoder 使用 PAT，可粘贴或获取本机旧连接器已保存的 PAT。新账号自动获取模型与平台用量。详情弹窗查看身份、认证类型、有效期、刷新能力、套餐与积分包；账号可命名、启停、排序和移出。
 - **积分签到**：按账号设置每日启动签到或定时签到（北京时间），保留每日执行记录、领取意图与设备限制，避免重复请求。
@@ -32,7 +32,7 @@
 
 ### 界面预览
 
-以下为 **v0.5.5–v0.5.8 实际面板 + 合成演示数据**。账号名称已替换，不包含真实手机号、邮箱、身份 ID、设备标识、登录凭证或会话内容；余额、用量和性能均为演示数值。
+以下为 **v0.5.9 实际面板 + 合成演示数据**。账号名称已替换，不包含真实手机号、邮箱、身份 ID、设备标识、登录凭证或会话内容；余额、用量和性能均为演示数值。
 
 | 总览与用量 | Token 明细与调用性能 |
 | --- | --- |
@@ -163,7 +163,7 @@ dsh plugin --profile desktop add dsh-multi-router
 dsh plugin --profile web add dsh-multi-router
 ```
 
-包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.8`。
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.9`。
 
 已使用 npm 来源的用户更新：
 
@@ -182,6 +182,16 @@ dsh plugin --profile desktop add dsh-multi-router
 **从 v0.5.8 起，本插件支持运行中更新。** 更新完成后会等待当前模型调用、签到、账号操作与安装任务结束，调用 DSH 官方接口重新加载本插件，前端面板也同步切换。面板顶部显示实际运行版本；安装版本尚未生效时单独提示，不把磁盘版本冒充运行版本。通过插件页、插件内更新器或外部 CLI 更新均可检测；外部更新可能最多延迟一分钟。
 
 **首次从 v0.5.7 或更早版本升级：** 旧后台缺少完整自动重载逻辑，在 DSH 插件页关闭再重新启用一次 `dsh-multi-router` 即可加载新入口，无需退出应用。之后升级自动生效。若遇到连接或版本同步异常，面板提供「重新加载插件」与「重新连接」；只有不提供热加载接口的 DSH 才需要升级 DSH 或重启服务。其他插件是否能即时更新仍以 DSH 返回的结果为准。
+
+### 安装后仍显示旧版本 / Windows 安装失败
+
+在 DSH 原生插件安装框明确输入 `dsh-multi-router@0.5.9`；使用命令行时可指定官方源：
+
+```bash
+dsh plugin --profile desktop add dsh-multi-router@0.5.9 --registry=https://registry.npmjs.org/
+```
+
+先确认安装成功，再核对插件页的安装版本及面板顶部的运行版本。输入包名却得到旧版，可能涉及安装器缓存、镜像、旧锁文件或安装失败回滚，不能只凭 `operation-error` 判断。插件内更新器会验证实际版本、展示安装声明与检查频道；失败时可查看脱敏诊断。文件占用、网络失败与插件加载错误分别处理，不把失败安装归因于面板缓存。v0.5.6 旧后台首次迁移后可关闭再启用本插件一次；无需先卸载或删除账号配置。
 
 ### 方式二：GitHub 链接安装
 
@@ -202,7 +212,7 @@ dsh plugin --profile desktop add github:AndroidSix/dsh-multi-router
 dsh plugin --profile web add github:AndroidSix/dsh-multi-router
 ```
 
-默认获取 main 分支；仓库已包含编译好的 `lib/`，安装端无需 clone、构建或运行初始化命令，也没有安装时构建脚本。首次启用自动在当前设备的 DSH 数据目录创建配置及预制路由，并读取本机已登录的 WorkBuddy / Trae 账号，无需先手动添加。Qoder 使用 PAT，或读取旧连接器保存的 PAT。凭证只保存独立副本；再次检测不会重复添加，也不会启用已停用账号。移出的本机账号不会被定时扫描重新加入，可点击「重新检测本机登录」主动恢复。已有配置不会被覆盖；损坏的配置也不会自动重置。安装 / 更新 / 卸载后需**完全退出并重启**对应的 DSH 进程生效。
+默认获取 main 分支；仓库已包含编译好的 `lib/`，安装端无需 clone、构建或运行初始化命令，也没有安装时构建脚本。首次启用自动在当前设备的 DSH 数据目录创建配置及预制路由，并读取本机已登录的 WorkBuddy / Trae 账号，无需先手动添加。Qoder 使用 PAT，或读取旧连接器保存的 PAT。凭证只保存独立副本；再次检测不会重复添加，也不会启用已停用账号。移出的本机账号不会被定时扫描重新加入，可点击「重新检测本机登录」主动恢复。已有配置不会被覆盖；损坏的配置也不会自动重置。首次安装由 DSH 启用组件；本插件更新支持运行中重载，首次从旧版本迁移按上方说明关闭再启用一次。
 
 已安装用户更新（也适用于旧版从本地 `.tgz` 安装的用户）：
 
@@ -210,7 +220,7 @@ dsh plugin --profile web add github:AndroidSix/dsh-multi-router
 dsh plugin --profile desktop add github:AndroidSix/dsh-multi-router
 ```
 
-这会将同名插件的安装源切换为 GitHub 并获取当前版本，账号、路由和统计保存在包目录之外，不会随包替换。旧的 `file:...tgz` 依赖绑定一个固定本地文件，普通更新不会自动改为 GitHub 来源。已经使用 GitHub 来源时，也可以执行 `dsh plugin --profile desktop update dsh-multi-router`。安装后的运行进程仍需完全退出并重启；「刷新面板」只刷新账号和用量，不会更新插件代码。GitHub 提交、GitHub Releases 和 npm 版本是不同发布来源，第三方商店是否提示更新取决于其检测方式。
+这会将同名插件的安装源切换为 GitHub 并获取当前版本，账号、路由和统计保存在包目录之外，不会随包替换。旧的 `file:...tgz` 依赖绑定一个固定本地文件，普通更新不会自动改为 GitHub 来源。已经使用 GitHub 来源时，也可以执行 `dsh plugin --profile desktop update dsh-multi-router`。本插件更新后等待空闲自动重载；「刷新面板」只读取账号和用量，连接异常时使用「重新加载插件」。GitHub 提交、GitHub Releases 和 npm 版本是不同发布来源，第三方商店是否提示更新取决于其检测方式。
 
 Desktop 若提示 CLI 仅安装依赖、未自动启用 bundle：完全退出 Desktop 后，在 desktop profile 的 `package.json` 的 `dsh.profile.bundles` 数组里追加 `"dsh-multi-router"`（保留其他 bundle），再启动并打开配置页。
 
@@ -224,7 +234,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.5.5.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.5.9.tgz
 ```
 
 ### 配置账号

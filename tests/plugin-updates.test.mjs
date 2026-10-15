@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PluginUpdates, parsePluginSource, githubCommit } from '../src/plugin-updates.mjs';
 import { writePrivateJson } from '../src/config.mjs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 const sha = 'a'.repeat(40), latest = 'b'.repeat(40);
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-plugin-update-'));
@@ -202,4 +203,40 @@ test('failed automatic lookups reserve their retry window across restarts and ne
   assert.equal(updater.reminders().length, 0);
   await updater.load(); await updater.tick();
   assert.equal(attempts, before); assert.equal(checks.length, 0);
+});
+
+test('install failures explain Windows file locks and network errors without exposing raw diagnostics', async t => {
+  const { updater, service } = await fixture(t);
+  const secret = 'Bearer private-token C:\\Users\\private-user\\.dsh';
+  for (const [diagnostic, reason, pattern] of [
+    [`EPERM: rename ${secret}`, 'files', /文件.*占用|权限/],
+    [`ETIMEDOUT downloading ${secret}`, 'network', /网络|下载/],
+    [`HMR transactions cannot be nested ${secret}`, 'activation', /加载/],
+    [`unknown exception ${secret}`, 'unknown', /安装日志/],
+  ]) {
+    service.installBundle = async () => ({ application: 'failed', error: { code: 'operation-error', diagnostic } });
+    updater.check(); await updater.flight;
+    updater.update(['other-plugin']); await updater.flight;
+    const result = updater.job.results[0];
+    assert.equal(result.status, 'failed'); assert.equal(result.diagnostic?.reason, reason); assert.match(result.message, pattern);
+    assert.ok(!JSON.stringify(updater.state()).includes('private-'), 'raw credentials and user paths never reach browser state');
+  }
+});
+
+test('updates enter the official service outside an inherited HMR activation scope', async t => {
+  const { updater, service } = await fixture(t);
+  const executing = new AsyncLocalStorage(); updater.hmr = () => ({ executing });
+  const install = service.installBundle;
+  service.installBundle = async (...args) => { assert.equal(executing.getStore(), undefined); return install(...args); };
+  updater.check(); await updater.flight;
+  await executing.run(true, async () => { updater.update(['other-plugin']); await updater.flight; });
+  assert.equal(updater.job.results[0].status, 'installed');
+});
+
+test('fresh npm installs verify the checked version instead of reporting a stale mirror install as success', async t => {
+  const { updater, service } = await fixture(t);
+  service.installBundle = async () => ({ bundle: 'other-plugin', application: 'restart-required', packageResult: { exitCode: 0 } });
+  updater.install('other-plugin'); await updater.flight;
+  assert.equal(updater.job.results[0].status, 'failed');
+  assert.match(updater.job.results[0].message, /实际安装版本.*1.0.0.*1.1.0/);
 });
