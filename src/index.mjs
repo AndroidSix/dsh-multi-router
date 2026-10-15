@@ -20,8 +20,9 @@ export async function apply(ctx, options = {}) {
     disposed = true; stopWatch?.(); clearInterval(monitorTimer);
     if (manager) manager.closed = true;
     manager?.plugins.abort.abort();
+    manager?.checkins.abort.abort();
     for (const release of releases) release();
-    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.telemetry.queue.catch(() => {})]);
+    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.checkins.flight, manager?.telemetry.queue.catch(() => {})]);
   });
   const file = resolve(options.configFile ?? process.env.DSH_MULTI_ROUTER_CONFIG ?? defaultConfigFile());
   try {
@@ -36,10 +37,12 @@ export async function apply(ctx, options = {}) {
     await manager.load();
     await manager.syncLocalAccounts().catch(() => ctx.logger.warn('multi-router: local login discovery failed; manual import remains available'));
     await manager.finishInitialSetup().catch(() => ctx.logger.warn('multi-router: first-install guidance could not be saved'));
+    manager.checkins.start(undefined, true);
     if (disposed) return;
     void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
     void manager.monitorAll().catch(() => ctx.logger.warn('multi-router: usage persistence failed'));
     monitorTimer = setInterval(() => { void manager.syncLocalAccounts().then(() => manager.monitorAll()).catch(() => ctx.logger.warn('multi-router: local login discovery or usage persistence failed'));
+      manager.checkins.start(undefined, true);
       void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed')); }, 60000);
     monitorTimer.unref();
     for (const provider of ['multi-router', ...PROVIDERS]) {

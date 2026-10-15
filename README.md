@@ -6,7 +6,7 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.4.1。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.5.0。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
@@ -87,11 +87,22 @@ Qoder 的 `dfmodel` 在真实目录里显示为 DeepSeek-Flash，未声明具体
 
 统计保存于配置旁的 `usage.json`，0600 权限。仅保存账号/路由元数据、计数、平台额度和保留期限内的逐次调用明细，不保存提示词、回答或认证凭证；明细默认保留最近 3 天（滚动 72 小时），由 `usageRetentionDays` 设置 1–365 天，不再限定 80 条；缩短期限立即删除超期明细，延长不会恢复已删除记录。累计用量、额度轮换基线、临期冷却不清零，日趋势独立保留最近 31 天。Token 从本版本启用后开始计量，不回填历史会话。三家积分单位分别展示，不汇总为通用余额；平台余额下降可包含其他应用消费、积分包到期或延迟结算，不宣称是精确的单请求扣费。平台查询失败保留最后数据与错误、时间；没有可用积分数据的账号不参加积分阈值轮换。
 
-账号获取采用官方客户端已有登录文件的只读解析，不修改客户端登录、不复制参考项目代码、不自动签到。手动凭证支持 WorkBuddy / Trae 字段表单、三家凭证 JSON 和 Qoder PAT；凭证格式、区域、Trae 设备身份会校验。已有账号可在详情中「补充 / 更新凭证」，旧副本保留。Qoder 普通网页 Cookie 无法替代 PAT；官方 PAT 指引见 https://docs.qoder.com/cli/authentication 。
+账号获取采用官方客户端已有登录文件的只读解析，不修改客户端登录、不复制参考项目代码；自动签到需要在独立的「积分签到」页按账号开启，默认关闭。手动凭证支持 WorkBuddy / Trae 字段表单、三家凭证 JSON 和 Qoder PAT；凭证格式、区域、Trae 设备身份会校验。已有账号可在详情中「补充 / 更新凭证」，旧副本保留。Qoder 普通网页 Cookie 无法替代 PAT；官方 PAT 指引见 https://docs.qoder.com/cli/authentication 。
 
 ## 首次使用与账号自动获取
 
 第一次启用插件时会执行 WorkBuddy / WorkBuddy AI 与 Trae CN / Global / SOLO 的本机登录检测，将找到的有效登录保存为独立账号副本。首页会展示「本机账号自动获取」结果，区分已保存、未登录和无法读取，并提供「一键获取并保存」及手动添加入口；无需先逐个点击添加账号。之后每分钟检测新增登录，重复检测不重复添加，已停用和已删除的账号保持用户选择。Qoder 仍需添加 PAT。
+
+## 每日积分签到
+
+在配置面板打开 **积分签到**。当前接入 Trae CN 与 Qoder CN / Global 的已有签到能力：先查询平台是否开放活动、账号与设备是否已领取，再提交领取；活动是否开放和奖励额度以平台响应为准。WorkBuddy / WorkBuddy AI 与 Trae Global 暂无已核验的签到接口，面板会显示需到官方客户端查看，不猜测接口或奖励。
+
+- 每个账号可选择「立即签到」，或「签到全部可用账号」。**每日自动签到默认关闭**，按账号单独开启；已停用账号不参与。每天北京时间 10:05 后、DSH 运行期间执行，错过时在下次启动补查；10:05 前不会发起签到请求。
+- 请求串行，账号间至少间隔 10 秒。先持久化当天尝试记录，再发请求；同一账号当天最多尝试一次，重复账号副本按平台身份去重。网络超时或结果不明确时不重复提交，请到官方客户端核对。
+- 保留 Trae 原有设备身份；同一设备当天的领取已使用或结果不明确时，不切到同设备的其他账号继续领取。Qoder 优先复用官方 CLI 的设备身份，没有时使用连接器持久化的单一设备身份，所有账号一致，不随签到轮换。
+- 验证、授权拒绝或限流会暂停该平台签到；在官方客户端处理后，可以点击「恢复后续签到」。恢复不会清除今日尝试记录与设备限制，不提供更换设备身份、代理或绕过验证码的能力。平台风控行为不可预测，这些措施不能保证不触发风控。
+- 最近结果、可核验的奖励积分与自动签到开关直接展示（Qoder 不展示上游辅助函数猜测的奖励数额）；成功后刷新该账号平台余额。记录保存在配置旁的 `checkins.json`，0600 权限，仅保存身份哈希、日期和结果，不保存 Token 或原始服务端错误。保留最近 30 天，记录损坏时停止签到，不自动清空后重试。
+- 自动签到设置可随配置导入导出，领取记录与平台暂停状态不迁移。多台设备的本地记录不会互相同步，建议只在一台设备开启自动签到；平台领取状态仍会在提交前查询。
 
 ## 所有已安装插件的更新与安装
 
@@ -124,7 +135,7 @@ dsh plugin --profile desktop add dsh-multi-router
 dsh plugin --profile web add dsh-multi-router
 ```
 
-包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.4.1`。
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.0`。
 
 已使用 npm 来源的用户更新：
 
@@ -181,7 +192,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.4.1.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.5.0.tgz
 ```
 
 ### 配置账号

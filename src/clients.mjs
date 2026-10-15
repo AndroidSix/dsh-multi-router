@@ -12,6 +12,7 @@ import { mergeTraeModelSources } from '../upstream/trae/src/catalog.ts';
 import { QoderUpstreamClient } from '../upstream/qoder/src/upstream.ts';
 import { createQoderTransport } from '../upstream/qoder/src/qoder/transport/index.ts';
 import { getMachineId } from '../upstream/qoder/src/qoder/transport/machine-id.ts';
+import { QoderLlmError } from '../upstream/qoder/src/qoder/errors.ts';
 import { RouteError, abortable } from './router.mjs';
 import { preflightStream } from './stream.mjs';
 
@@ -30,7 +31,7 @@ export function cachedModels(discover, ttl) {
   };
 }
 export async function createAccountClient(account, config, attachments) {
-  let chat, discover, accountInfo;
+  let chat, discover, accountInfo, checkin;
   if (account.provider.startsWith('workbuddy')) {
     const client = new WorkBuddyUpstreamClient();
     const variant = WORKBUDDY_VARIANTS.find(v => v.id === account.provider);
@@ -69,6 +70,20 @@ export async function createAccountClient(account, config, attachments) {
       catch { throw new RouteError(401, 'credential_refresh_failed'); }
     };
     const usage = new TraeUsageClient({ credential, deviceId: async () => (await identity()).deviceId });
+    if (account.provider === 'trae') {
+      const checkinUsage = new TraeUsageClient({ credential, deviceId: async () => (await identity()).deviceId,
+        fetchImpl: async (url, options) => {
+          const response = await fetch(url, options);
+          if (!response.ok) throw Object.assign(Error('checkin_http_error'), { status: response.status });
+          if (String(url).endsWith('/status')) {
+            const body = await response.clone().json();
+            if ((body.code !== undefined && body.code !== 0) || typeof body.checked_in !== 'boolean' || typeof body.did_checked_in !== 'boolean') throw Object.assign(Error('checkin_status_rejected'), { status: 403 });
+          }
+          return response;
+        } });
+      checkin = { identity: async () => ({ account: (await credential()).userId, device: (await identity()).deviceId }),
+        claim: signal => claimTraeCheckin(checkinUsage, signal) };
+    }
     accountInfo = async signal => {
       const c = await credential();
       const login = { state: 'valid', identity: c.userId, name: c.accountName || c.userId, expiresAt: c.expiresAtMs,
@@ -98,10 +113,29 @@ export async function createAccountClient(account, config, attachments) {
       return value.pat;
     };
     const transport = createQoderTransport({ region, resolvePat: getPat,
-      resolveMachineId: () => getMachineId([`${account.credentialFile}.machine-id`]),
+      // Reuse the official CLI identity (or one persisted plugin seed) for this physical device.
+      resolveMachineId: () => getMachineId(),
       ...(attachments ? { attachments } : {}) });
     const client = new QoderUpstreamClient({ region, providerId: account.provider, getPat, transport,
       ...(attachments ? { attachments } : {}) });
+    const checkinTransport = createQoderTransport({ region, resolvePat: getPat, resolveMachineId: () => getMachineId(),
+      fetch: async (url, options) => {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          // A check-in refusal must not enter the metadata/auth healing retry paths.
+          const restricted = [401, 403, 429].includes(response.status);
+          throw new QoderLlmError(`checkin_http_${response.status}`, restricted ? 'QUOTA' : 'PROVIDER_ERROR', { status: response.status });
+        }
+        return response;
+      } });
+    checkin = { identity: async signal => ({ account: (await checkinTransport.readAccount({ signal })).profile.id }),
+      claim: async signal => {
+        const result = await checkinTransport.checkIn(signal);
+        // The upstream helper supplies a fallback reward of 100. Do not report that as an observed grant.
+        if (result.status !== 'error') return { status: result.status };
+        // The upstream service returns errors as values. Never expose its raw body or retry it through another account.
+        return { status: /401|403|429|rate.?limit|throttl|captcha|verify|verification|风控|验证|频繁|forbidden|unauthor|AUTH/i.test(result.message || '') ? 'paused' : 'uncertain' };
+      } };
     accountInfo = async signal => {
       const result = await transport.readAccount({ force: true, signal });
       const buckets = [['个人套餐', result.usage?.userQuota], ['附加额度', result.usage?.addOnQuota], ['组织额度', result.usage?.orgResourcePackage]].filter(([, p]) => p).map(([name, p]) => ({ ...p, name }));
@@ -114,9 +148,25 @@ export async function createAccountClient(account, config, attachments) {
     discover = signal => client.fetchModels(signal);
     chat = (input, signal) => client.chatStream(JSON.stringify(input), signal);
   }
-  return { models: cachedModels(discover, config.catalogTtlMs), accountInfo,
+  return { models: cachedModels(discover, config.catalogTtlMs), accountInfo, checkin,
     async chat(input, signal) {
       const result = await chat(input, signal);
       return result.ok ? preflightStream(result.response, signal) : result;
     } };
+}
+
+export async function claimTraeCheckin(usage, signal) {
+  try {
+    const status = await usage.checkinStatus(signal);
+    if (status.checkedIn) return { status: 'already-claimed' };
+    if (status.didCheckedIn) return { status: 'device-used' };
+    if (!status.enabled) return { status: 'no-campaign' };
+    const claim = await usage.claimCheckin(signal);
+    if (claim.code === 9095) return { status: 'device-used' };
+    if (!claim.claimed) return { status: 'paused' };
+    // A success response is authoritative; do not turn a failed follow-up balance read into a retry.
+    return { status: 'claimed', ...(Number.isFinite(status.credits) ? { amount: status.credits + (status.extraCredits || 0) } : {}) };
+  } catch (e) {
+    return { status: [401, 403, 429].includes(e.status) ? 'paused' : 'uncertain' };
+  }
 }

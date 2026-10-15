@@ -56,6 +56,7 @@ export function validateConfig(raw, file = resolve('router.json')) {
     ids.add(account.id);
     if (!PROVIDERS.includes(account.provider) || !nonempty(account.credentialFile)) throw new Error(`Invalid provider or credentialFile for ${account.id}`);
     if (account.enabled !== undefined && typeof account.enabled !== 'boolean') throw new Error(`Invalid enabled flag for ${account.id}`);
+    if (account.autoCheckin !== undefined && (typeof account.autoCheckin !== 'boolean' || (account.autoCheckin && !['trae', 'qoder', 'qoder-global'].includes(account.provider)))) throw new Error(`Invalid autoCheckin for ${account.id}`);
     if (account.name !== undefined && (!nonempty(account.name) || account.name.length > 100)) throw new Error(`Invalid account name for ${account.id}`);
     if (account.identityFile !== undefined && !nonempty(account.identityFile)) throw new Error(`Invalid identityFile for ${account.id}`);
     return { ...account, credentialFile: resolve(dirname(file), account.credentialFile),

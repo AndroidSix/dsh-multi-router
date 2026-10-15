@@ -12,7 +12,7 @@ const pick = (value, keys) => Object.fromEntries(keys.filter(k => Object.hasOwn(
 const options = ['cooldownMs', 'requestTimeoutMs', 'catalogTtlMs', 'retryServerErrors', 'modelVisibility', 'usageRetentionDays'];
 function settings(config) {
   return { ...pick(config, options), models: Object.fromEntries(Object.entries(config.models ?? {}).map(([p, rows]) => [p, Object.fromEntries(Object.entries(rows).map(([id, pref]) => [id, pick(pref, ['name', 'visible'])]))])),
-    accounts: config.accounts.map(a => pick(a, ['id', 'provider', 'name', 'enabled'])),
+    accounts: config.accounts.map(a => pick(a, ['id', 'provider', 'name', 'enabled', 'autoCheckin'])),
     routes: Object.fromEntries(Object.entries(config.routes).map(([id, r]) => [id, {
       ...pick(r, ['name', 'visible', 'strategy', 'contextWindow', 'maxTokens', 'preferExpiringCredits', 'expiringWithinDays', 'freeOnly', 'freeModels']),
       targets: r.targets.map(t => pick(t, ['provider', 'account', 'model', 'models', 'weight', 'tokenBudget', 'creditBudget'])),

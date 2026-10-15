@@ -16,6 +16,7 @@ import { matchModel } from './router.mjs';
 import { routeReasoning, reasoningModes } from './reasoning.mjs';
 import { exportConfiguration, decodeConfiguration, migrationSummary, prepareMigration } from './migration.mjs';
 import { PluginUpdates } from './plugin-updates.mjs';
+import { Checkins, supportsCheckin } from './checkins.mjs';
 
 export const MANAGEMENT_PATH = '/.well-known/dsh-multi-router';
 const revisionOf = raw => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
@@ -45,6 +46,7 @@ export class Manager {
     this.closed = false; this.monitorFlights = new Map(); this.loginInfo = new Map();
     this.telemetry = new Telemetry(join(dirname(file), 'usage.json'));
     this.plugins = new PluginUpdates(pluginAccess);
+    this.checkins = new Checkins(join(dirname(file), 'checkins.json'), this);
     this.setupFile = join(dirname(file), 'initial-setup.json');
     router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a);
     router.prepareFree = () => this.checkFreeModels(true);
@@ -55,6 +57,7 @@ export class Manager {
     this.raw = JSON.parse(await readFile(this.file, 'utf8'));
     try { this.setup = JSON.parse(await readFile(this.setupFile, 'utf8')); } catch { this.setup = undefined; }
     this.config = validateConfig(this.raw, this.file);
+    await this.checkins.load();
     try {
       const saved = JSON.parse(await readFile(this.catalogFile, 'utf8'));
       for (const account of this.config.accounts) {
@@ -298,6 +301,7 @@ export class Manager {
     const status = this.router.status();
     return { pluginVersion, revision: this.revision, localDiscovery: this.localDiscovery ?? [], setup: this.setup,
       pluginUpdates: this.plugins.state(),
+      checkins: this.checkins.state(),
       telemetry: this.telemetry.state(),
       accounts: this.config.accounts.map(a => ({ id: a.id, provider: a.provider, name: a.name ?? a.id,
         enabled: a.enabled !== false, status: status.find(s => s.id === a.id),
@@ -315,6 +319,14 @@ export class Manager {
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (input.action === 'checkins.run') {
+      try { this.checkins.start(input.ids); } catch (e) { bad(e.message); }
+      return this.state();
+    }
+    if (input.action === 'checkins.resume') {
+      try { await this.checkins.resume(input.provider); } catch (e) { bad(e.message); }
+      return this.state();
+    }
     if (typeof input.action === 'string' && input.action.startsWith('plugins.')) {
       try { await this.plugins.action(input); } catch (e) { bad(e.message); }
       return this.state();
@@ -430,6 +442,10 @@ export class Manager {
           if (!input.name && !replacing) added.name = imported.credential?.nickname || imported.credential?.accountName || input.id;
         } else if (input.action === 'account.update') {
           if (!account) bad('账号不存在');
+          if (input.autoCheckin !== undefined) {
+            if (typeof input.autoCheckin !== 'boolean' || !supportsCheckin(account.provider)) bad('此平台暂不支持自动签到');
+            account.autoCheckin = input.autoCheckin;
+          }
           if (input.name !== undefined) account.name = input.name;
           if (input.enabled !== undefined) account.enabled = input.enabled;
         } else if (input.action === 'account.move') {

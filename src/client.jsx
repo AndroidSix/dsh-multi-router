@@ -62,15 +62,15 @@ export function RouterPage({ view = 'page' }) {
     return () => clearInterval(timer);
   }, [view, live]);
   useEffect(() => {
-    if (data?.pluginUpdates?.job?.state !== 'running') return;
+    if (data?.pluginUpdates?.job?.state !== 'running' && !data?.checkins?.running) return;
     const timer = setInterval(() => { if (polling.current) return; polling.current = true; void load().catch(e => setError(e.message)).finally(() => { polling.current = false; }); }, 2000);
     return () => clearInterval(timer);
-  }, [data?.pluginUpdates?.job?.state]);
+  }, [data?.pluginUpdates?.job?.state, data?.checkins?.running]);
   async function act(action) {
     if (busy || backendNeedsRestart(data)) return false;
     setBusy(true); setError(''); setNotice('');
     try { const res = await fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Multi-Router-Key': data.key }, body: JSON.stringify({ revision: data.revision, ...action }) });
-      const next = await readManagementResponse(res); const { exported, ...state } = next; setData(state); setNotice(action.action.startsWith('plugins.') || action.action === 'setup.dismiss' ? '' : action.action === 'accounts.discover' || action.action === 'monitor.refresh' ? '已重新检测本机登录并刷新用量；检测结果见下方。' : action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
+      const next = await readManagementResponse(res); const { exported, ...state } = next; setData(state); setNotice(action.action.startsWith('checkins.') || action.action.startsWith('plugins.') || action.action === 'setup.dismiss' ? '' : action.action === 'accounts.discover' || action.action === 'monitor.refresh' ? '已重新检测本机登录并刷新用量；检测结果见下方。' : action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
     } catch (e) { setError(e.message); return false; } finally { setBusy(false); }
   }
   function openAccount(mode, account) { setError(''); setNotice(''); setAccountModal({ mode, account, revision: data.revision }); }
@@ -80,13 +80,14 @@ export function RouterPage({ view = 'page' }) {
   const providerSelect = <label className="filter">供应商 / 区域<select value={provider} onChange={e => { setProvider(e.target.value); setSearch(''); }}>{data?.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>;
   if (view === 'summary') return '三家账号与登录信息、用量监控、模型管理，以及权重和额度路由。';
   return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>三家账号与统一路由</h2><p className="muted">连接账号，选择模型，按你的规则自动切换。</p></div><div className="row"><span className="badge">{busy ? '正在处理…' : '本机管理'}</span><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
-    <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['models', '模型管理'], ['routes', '路由规则'], ['plugins', '插件更新'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
+    <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['checkins', '积分签到'], ['models', '模型管理'], ['routes', '路由规则'], ['plugins', '插件更新'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
     {!draft && !accountModal && !presetModal && <Feedback error={error} notice={notice} />}
     {(backendNeedsRestart(data) || (!data && error)) && <RestartGuidance data={data} retry={() => { void load().catch(e => setError(e.message)); }} />}
     {!data ? <p role="status">{error ? '插件后台暂不可用。修复启用错误后点击「刷新面板」。' : '正在读取账号与用量…'}</p> : <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} disabled={backendNeedsRestart(data)} aria-busy={busy}>
       {['overview', 'accounts'].includes(tab) && data.setup?.dismissed !== true && <InitialSetup data={data} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'overview' && <Overview data={data} live={live} setLive={setLive} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'plugins' && <PluginUpdatesPanel data={data.pluginUpdates} busy={busy} act={act} />}
+      {tab === 'checkins' && <CheckinPanel data={data} busy={busy} act={act} />}
       {tab === 'usage' && <UsageDetails data={data} busy={busy} act={act} />}
       {tab === 'accounts' && <div className="stack"><div className="bar">{providerSelect}<div className="row">{!provider.startsWith('qoder') && <button disabled={busy} onClick={() => { void act({ action: 'accounts.discover', provider }); }}>重新检测本机登录</button>}<button disabled={busy} onClick={() => { void act({ action: 'monitor.refresh', provider }); }}>刷新登录与用量</button><button className="primary" disabled={busy} onClick={() => openAccount('add')}>添加账号</button></div></div>
         <p className="steps">WorkBuddy 与 Trae 启动时自动读取本机已登录账号，每分钟重新检测；Trae 自动识别 CN、Global 与 SOLO。也可添加手动凭证或导入其它设备账号。各账号保留独立副本。</p>
@@ -123,6 +124,33 @@ export function RouterPage({ view = 'page' }) {
     {accountModal && <Modal title={accountModal.mode === 'edit' ? '账号登录详情' : accountModal.mode === 'credentials' ? '补充 / 更新账号凭证' : '添加账号与获取登录'} busy={busy} close={() => setAccountModal(null)}><AccountForm modal={accountModal} provider={provider} data={data} busy={busy} act={act} replace={() => openAccount('credentials', accountModal.account)} close={selected => { if (typeof selected === 'string') setProvider(selected); setAccountModal(null); }} error={error} notice={notice} /></Modal>}
   </div>;
 }
+export function CheckinPanel({ data, busy, act }) {
+  const info = data.checkins || {}, rows = info.accounts || [], today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+  const beforeWindow = Date.now() < Date.parse(`${today}T10:05:00+08:00`);
+  const blocked = busy || info.running || !!info.error;
+  const eligible = rows.filter(r => r.supported && !r.paused && data.accounts.find(a => a.id === r.id)?.enabled && r.last?.day !== today);
+  const ready = r => eligible.includes(r) && !beforeWindow;
+  return <div className="stack"><section className="box stack"><div className="bar"><div><h3>每日积分签到</h3><p className="notice">{info.schedule}</p></div><button className="primary" disabled={blocked || beforeWindow || !eligible.length} onClick={() => { void act({ action: 'checkins.run', ids: eligible.map(r => r.id) }); }}>签到全部可用账号（{eligible.length}）</button></div>
+    <p className="steps">自动签到默认关闭，按账号开启。先查领取状态、串行提交，账号间隔至少 10 秒；每个账号每天最多尝试一次。遇到验证、限流或设备限制就停止，不会修改设备身份或切换账号重试。</p>
+    {beforeWindow && <p className="notice">今日签到将在北京时间 10:05 后开放。DSH 关闭期间不会执行，启用自动签到的账号会在下次启动后补查。</p>}
+    {info.error && <p role="alert" className="error">{info.error}</p>}
+    <p role="status">{info.running ? `正在处理 ${data.accounts.find(a => a.id === info.current)?.name || '签到队列'}…` : '签到结果和领取积分以下方平台响应为准。'}</p>
+  </section>
+  {data.providers.map(p => {
+    const accounts = data.accounts.filter(a => a.provider === p.id);
+    if (!accounts.length) return null;
+    const supported = rows.some(r => r.id === accounts[0].id && r.supported), paused = rows.some(r => accounts.some(a => a.id === r.id) && r.paused);
+    return <section className="box stack" key={p.id}><div className="bar"><h3>{p.name}</h3><span className="badge">{supported ? paused ? '已暂停' : '支持签到' : '官方客户端领取'}</span></div>
+      {!supported ? <p className="notice">{p.id.startsWith('workbuddy') ? 'WorkBuddy 暂未接入可核验的签到接口，请在官方客户端查看活动与领取入口。' : 'Trae Global 暂无已核验的积分签到接口，请在官方客户端查看权益。'}</p> : <>
+        {paused && <div className="steps"><p>平台限制或需要验证，已暂停该平台签到。请在官方客户端处理后再恢复；恢复仍保留今日尝试记录和设备限制。</p><button disabled={blocked} onClick={() => { void act({ action: 'checkins.resume', provider: p.id }); }}>我已在官方客户端处理，恢复后续签到</button></div>}
+        {accounts.map(a => { const r = rows.find(r => r.id === a.id) || {}; return <div className="item stack" key={a.id}><div className="bar"><div><strong>{a.name}</strong><p className="notice">{r.last ? `${r.last.day} · ${r.last.message}${r.last.amount !== undefined ? ` · ${fmt(r.last.amount)} 积分` : ''}` : '尚无签到记录'}{!a.enabled ? ' · 账号已停用' : ''}</p>{r.last && <small>{when(r.last.at)}</small>}</div><button disabled={blocked || !ready(r)} onClick={() => { void act({ action: 'checkins.run', ids: [a.id] }); }}>{r.last?.day === today ? '今日已处理' : '立即签到'}</button></div><label className="check"><input aria-label={`${a.name} 每日自动签到`} type="checkbox" disabled={blocked} checked={r.auto === true} onChange={e => { void act({ action: 'account.update', id: a.id, autoCheckin: e.target.checked }); }} />每日自动签到</label></div>; })}
+      </>}
+    </section>;
+  })}
+  {!data.accounts.length && <p className="box empty">先到「账号与登录」添加账号，再开启每日自动签到。</p>}
+  <p className="notice">多台设备的本地记录不会互相同步，每次都会查询平台领取状态；建议仅在一台常用设备开启自动签到。同一 Trae 设备每天最多处理一个领取请求，重复账号副本会去重；不保证平台一定发放奖励。</p>
+  </div>;
+}
 function Overview({ data, live, setLive, busy, act, go }) {
   const t = data.telemetry || {}, today = t.days?.[t.today] || {}, totals = data.accounts.reduce((s, a) => ({ requests: s.requests + (a.usage?.requests || 0), tokens: s.tokens + (a.usage?.tokens || 0) }), { requests: 0, tokens: 0 });
   const dates = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - 6 + i); const key = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }); return { key, tokens: t.days?.[key]?.tokens || 0 }; });
@@ -133,7 +161,7 @@ function Overview({ data, live, setLive, busy, act, go }) {
       return <section className="box stack" key={base}><div className="bar"><h3>{base === 'workbuddy' ? 'WorkBuddy' : base === 'trae' ? 'Trae' : 'Qoder'}</h3><span className="badge">{accounts.length} 个账号</span></div>{!accounts.length && <p className="notice">尚未连接账号</p>}{accounts.map(a => <div key={a.id}><div className="bar"><span>{a.name}</span><strong>{a.usage?.balance?.unlimited ? '不限量' : fmt(a.usage?.balance?.remaining)} {a.usage?.balance?.unit === 'credits' ? '积分' : ''}</strong></div><p className="notice">{a.usage?.balance?.error ? '查询失败 · 上次数据 ' : '更新于 '}{when(a.usage?.balance?.fetchedAt)}</p></div>)}<button disabled={busy} onClick={() => go('accounts')}>管理账号</button></section>; })}</div>
     <p className="notice">平台余额每分钟查询；Token 仅统计本插件请求，从升级开始记录。积分下降可能包含客户端或其他应用的消耗，三家积分分别展示。</p>
     <div className="grid"><section className="box"><h3>近 7 日 Token</h3><div className="trend" role="img" aria-label={dates.map(d => `${d.key} ${d.tokens} Token`).join('，')}>{dates.map(d => <div key={d.key} title={`${d.key} · ${fmt(d.tokens)} Token`}><i style={{ height: `${Math.max(3, d.tokens / max * 78)}%` }} /><small>{d.key.slice(5)}</small></div>)}</div><p className="notice">未返回 Token 用量的请求：{fmt(data.accounts.reduce((n, a) => n + (a.usage?.unmetered || 0), 0))} 次</p></section>
-      <section className="box stack"><h3>快速开始</h3><p className="notice">1. 确认自动获取的账号，或手动添加凭证<br />2. 使用预制路由，按需编辑账号切换规则<br />3. 到 DSH 模型选择器选择「统一路由」中的模型</p><div className="row"><button onClick={() => go('accounts')}>查看账号</button><button onClick={() => go('routes')}>配置路由</button><button onClick={() => go('plugins')}>检查所有插件更新</button></div></section></div>
+      <section className="box stack"><h3>快速开始</h3><p className="notice">1. 确认自动获取的账号，或手动添加凭证<br />2. 使用预制路由，按需编辑账号切换规则<br />3. 到 DSH 模型选择器选择「统一路由」中的模型</p><div className="row"><button onClick={() => go('accounts')}>查看账号</button><button onClick={() => go('routes')}>配置路由</button><button onClick={() => go('checkins')}>积分签到</button><button onClick={() => go('plugins')}>检查所有插件更新</button></div></section></div>
     <section className="box"><div className="bar"><h3>最近请求</h3><button onClick={() => go('usage')}>查看 Token 明细</button></div><div className="scroll"><table className="table"><thead><tr><th>时间</th><th>账号</th><th>路由 / 模型</th><th>Token</th><th>结果</th></tr></thead><tbody>{(t.events || []).slice(0, 15).map((e, i) => <tr key={`${e.at}:${i}`}><td>{when(e.at)}</td><td>{data.accounts.find(a => a.id === e.account)?.name || e.account}</td><td className="mono">{e.alias}</td><td>{fmt(e.tokens)}</td><td>{e.outcome === 'completed' ? '成功' : e.outcome === 'cancelled' ? '已取消' : `失败 ${e.status}`}</td></tr>)}</tbody></table>{!t.events?.length && <p className="empty">尚无请求记录。通过本插件调用模型后会显示在这里。</p>}</div></section>
   </div>;
 }
