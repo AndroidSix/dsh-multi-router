@@ -128,13 +128,16 @@ export function CheckinPanel({ data, busy, act }) {
   const info = data.checkins || {}, rows = info.accounts || [], today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
   const beforeWindow = Date.now() < Date.parse(`${today}T10:05:00+08:00`);
   const blocked = busy || info.running || !!info.error;
-  const eligible = rows.filter(r => r.supported && !r.paused && data.accounts.find(a => a.id === r.id)?.enabled && r.last?.day !== today);
+  const eligible = rows.filter(r => r.supported && !r.paused && data.accounts.find(a => a.id === r.id)?.enabled && (r.last?.day !== today || r.last?.retryReady));
   const ready = r => eligible.includes(r) && !beforeWindow;
+  const displayName = a => a?.name?.replace(/(1\d{2})\d{4}(\d{4})/g, '$1****$2');
+  const resultLabels = { claimed: '成功', 'already-claimed': '已领取', 'no-campaign': '无活动', retryable: '查询失败', 'before-window': '窗口未开', 'auth-invalid': '令牌失效', paused: '平台暂停', uncertain: '待核对', 'device-used': '设备已参与' };
   return <div className="stack"><section className="box stack"><div className="bar"><div><h3>每日积分签到</h3><p className="notice">{info.schedule}</p></div><button className="primary" disabled={blocked || beforeWindow || !eligible.length} onClick={() => { void act({ action: 'checkins.run', ids: eligible.map(r => r.id) }); }}>签到全部可用账号（{eligible.length}）</button></div>
-    <p className="steps">自动签到默认关闭，按账号开启。先查领取状态、串行提交，账号间隔至少 10 秒；每个账号每天最多尝试一次。遇到验证、限流或设备限制就停止，不会修改设备身份或切换账号重试。</p>
+    <p className="steps">自动签到默认关闭，按账号开启。先查领取状态、串行提交，账号间隔至少 10 秒；每个账号每天最多提交一次领取。确认尚未提交的查询失败，20:05 后最多补查一次；已领取、无活动和结果不明的账号跳过。遇到验证、限流或设备限制就停止，不会修改设备身份或切换账号重试。</p>
     {beforeWindow && <p className="notice">今日签到将在北京时间 10:05 后开放。DSH 关闭期间不会执行，启用自动签到的账号会在下次启动后补查。</p>}
     {info.error && <p role="alert" className="error">{info.error}</p>}
-    <p role="status">{info.running ? `正在处理 ${data.accounts.find(a => a.id === info.current)?.name || '签到队列'}…` : '签到结果和领取积分以下方平台响应为准。'}</p>
+    <p role="status">{info.running ? `正在处理 ${displayName(data.accounts.find(a => a.id === info.current)) || '签到队列'}…` : '签到结果和领取积分以下方平台响应为准。'}</p>
+    {info.report && <p className="notice">最近一轮 · {when(info.report.at)} · {Object.entries(info.report.counts || {}).map(([key, n]) => `${resultLabels[key] || '未完成'} ${n}`).join(' · ')}。没有待补查账号时不重复汇报。</p>}
   </section>
   {data.providers.map(p => {
     const accounts = data.accounts.filter(a => a.provider === p.id);
@@ -143,7 +146,7 @@ export function CheckinPanel({ data, busy, act }) {
     return <section className="box stack" key={p.id}><div className="bar"><h3>{p.name}</h3><span className="badge">{supported ? paused ? '已暂停' : '支持签到' : '官方客户端领取'}</span></div>
       {!supported ? <p className="notice">{p.id.startsWith('workbuddy') ? 'WorkBuddy 暂未接入可核验的签到接口，请在官方客户端查看活动与领取入口。' : 'Trae Global 暂无已核验的积分签到接口，请在官方客户端查看权益。'}</p> : <>
         {paused && <div className="steps"><p>平台限制或需要验证，已暂停该平台签到。请在官方客户端处理后再恢复；恢复仍保留今日尝试记录和设备限制。</p><button disabled={blocked} onClick={() => { void act({ action: 'checkins.resume', provider: p.id }); }}>我已在官方客户端处理，恢复后续签到</button></div>}
-        {accounts.map(a => { const r = rows.find(r => r.id === a.id) || {}; return <div className="item stack" key={a.id}><div className="bar"><div><strong>{a.name}</strong><p className="notice">{r.last ? `${r.last.day} · ${r.last.message}${r.last.amount !== undefined ? ` · ${fmt(r.last.amount)} 积分` : ''}` : '尚无签到记录'}{!a.enabled ? ' · 账号已停用' : ''}</p>{r.last && <small>{when(r.last.at)}</small>}</div><button disabled={blocked || !ready(r)} onClick={() => { void act({ action: 'checkins.run', ids: [a.id] }); }}>{r.last?.day === today ? '今日已处理' : '立即签到'}</button></div><label className="check"><input aria-label={`${a.name} 每日自动签到`} type="checkbox" disabled={blocked} checked={r.auto === true} onChange={e => { void act({ action: 'account.update', id: a.id, autoCheckin: e.target.checked }); }} />每日自动签到</label></div>; })}
+        {accounts.map(a => { const r = rows.find(r => r.id === a.id) || {}, last = r.last?.day === today ? r.last : undefined; return <div className="item stack" key={a.id}><div className="bar"><div><strong>{displayName(a)}</strong><p className="notice">{r.last ? `${r.last.day} · ${r.last.message}${r.last.amount !== undefined ? ` · ${fmt(r.last.amount)} 积分` : ''}` : '尚无签到记录'}{!a.enabled ? ' · 账号已停用' : ''}</p>{r.last && <small>{when(r.last.at)}{last?.retryAt ? ` · 补查时间 ${when(last.retryAt)}` : last?.status === 'retryable' ? ' · 今日不再补查，明日再试' : ''}</small>}</div><button disabled={blocked || !ready(r)} onClick={() => { void act({ action: 'checkins.run', ids: [a.id] }); }}>{last?.status === 'auth-invalid' ? '请更新凭证' : last?.retryReady ? '补查签到' : last?.retryAt ? '等待晚间补查' : last ? '今日已处理' : '立即签到'}</button></div><label className="check"><input aria-label={`${displayName(a)} 每日自动签到`} type="checkbox" disabled={blocked} checked={r.auto === true} onChange={e => { void act({ action: 'account.update', id: a.id, autoCheckin: e.target.checked }); }} />每日自动签到</label></div>; })}
       </>}
     </section>;
   })}

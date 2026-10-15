@@ -48,6 +48,13 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   } }));
   assert.match(checkins, /每日自动签到/); assert.match(checkins, /WorkBuddy 暂未接入/);
   assert.match(checkins, /设备限制/); assert.match(checkins, /默认关闭/);
+  assert.match(checkins, /20:05/);
+  const masked = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.CheckinPanel, { data: {
+    providers: [{ id: 'trae', name: 'Trae CN' }], accounts: [{ id: 'one', name: '用户13800138000', provider: 'trae', enabled: true }],
+    checkins: { accounts: [{ id: 'one', supported: true, last: { status: 'retryable', day: '2026-10-15', message: '查询失败', retryAt: 1792065900000 } }],
+      report: { at: 1792050000000, counts: { 'no-campaign': 1 } } },
+  } }));
+  assert.ok(!masked.includes('13800138000')); assert.match(masked, /138\*\*\*\*8000/); assert.match(masked, /无活动 1/);
   module.apply({ slots: { inject(name, fn) { assert.equal(name, 'plugins.bundle.config'); fn(); },
     register(options, component) { registered = { options, component }; } } });
   assert.equal(registered.options.key, 'dsh-multi-router');

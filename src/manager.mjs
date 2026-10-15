@@ -528,6 +528,7 @@ export class Manager {
       if (input.action === 'preset.add' || input.action === 'preset.add-all') { await this.checkFreeModels(); return this.state(); }
       if (input.action === 'account.add' || input.action === 'account.credentials') {
         const account = this.config.accounts.find(a => a.id === input.id);
+        if (input.action === 'account.credentials' && !this.checkins.failed) await this.checkins.credentialsUpdated(input.id);
         if (account) { await Promise.all([this.refreshAccount(account, true), this.monitorAccount(account)]); return this.state(); }
       }
       return state;

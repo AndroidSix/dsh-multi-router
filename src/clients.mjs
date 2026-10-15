@@ -13,6 +13,9 @@ import { QoderUpstreamClient } from '../upstream/qoder/src/upstream.ts';
 import { createQoderTransport } from '../upstream/qoder/src/qoder/transport/index.ts';
 import { getMachineId } from '../upstream/qoder/src/qoder/transport/machine-id.ts';
 import { QoderLlmError } from '../upstream/qoder/src/qoder/errors.ts';
+import { QoderAuthService } from '../upstream/qoder/src/qoder/transport/auth.ts';
+import { QoderCheckInService } from '../upstream/qoder/src/qoder/transport/checkin.ts';
+import { checkinFailure } from './checkins.mjs';
 import { RouteError, abortable } from './router.mjs';
 import { preflightStream } from './stream.mjs';
 
@@ -71,7 +74,8 @@ export async function createAccountClient(account, config, attachments) {
     };
     const usage = new TraeUsageClient({ credential, deviceId: async () => (await identity()).deviceId });
     if (account.provider === 'trae') {
-      const checkinUsage = new TraeUsageClient({ credential, deviceId: async () => (await identity()).deviceId,
+      const checkinCredential = () => store.resolve();
+      const checkinUsage = new TraeUsageClient({ credential: checkinCredential, deviceId: async () => (await identity()).deviceId,
         fetchImpl: async (url, options) => {
           const response = await fetch(url, options);
           if (!response.ok) throw Object.assign(Error('checkin_http_error'), { status: response.status });
@@ -79,9 +83,10 @@ export async function createAccountClient(account, config, attachments) {
             const body = await response.clone().json();
             if ((body.code !== undefined && body.code !== 0) || typeof body.checked_in !== 'boolean' || typeof body.did_checked_in !== 'boolean') throw Object.assign(Error('checkin_status_rejected'), { status: 403 });
           }
+          if (String(url).endsWith('/claim') && !Number.isFinite((await response.clone().json()).code)) throw Error('checkin_claim_invalid');
           return response;
         } });
-      checkin = { identity: async () => ({ account: (await credential()).userId, device: (await identity()).deviceId }),
+      checkin = { identity: async () => ({ account: (await checkinCredential()).userId, device: (await identity()).deviceId }),
         claim: signal => claimTraeCheckin(checkinUsage, signal) };
     }
     accountInfo = async signal => {
@@ -118,24 +123,7 @@ export async function createAccountClient(account, config, attachments) {
       ...(attachments ? { attachments } : {}) });
     const client = new QoderUpstreamClient({ region, providerId: account.provider, getPat, transport,
       ...(attachments ? { attachments } : {}) });
-    const checkinTransport = createQoderTransport({ region, resolvePat: getPat, resolveMachineId: () => getMachineId(),
-      fetch: async (url, options) => {
-        const response = await fetch(url, options);
-        if (!response.ok) {
-          // A check-in refusal must not enter the metadata/auth healing retry paths.
-          const restricted = [401, 403, 429].includes(response.status);
-          throw new QoderLlmError(`checkin_http_${response.status}`, restricted ? 'QUOTA' : 'PROVIDER_ERROR', { status: response.status });
-        }
-        return response;
-      } });
-    checkin = { identity: async signal => ({ account: (await checkinTransport.readAccount({ signal })).profile.id }),
-      claim: async signal => {
-        const result = await checkinTransport.checkIn(signal);
-        // The upstream helper supplies a fallback reward of 100. Do not report that as an observed grant.
-        if (result.status !== 'error') return { status: result.status };
-        // The upstream service returns errors as values. Never expose its raw body or retry it through another account.
-        return { status: /401|403|429|rate.?limit|throttl|captcha|verify|verification|风控|验证|频繁|forbidden|unauthor|AUTH/i.test(result.message || '') ? 'paused' : 'uncertain' };
-      } };
+    checkin = createQoderCheckin(region, getPat);
     accountInfo = async signal => {
       const result = await transport.readAccount({ force: true, signal });
       const buckets = [['个人套餐', result.usage?.userQuota], ['附加额度', result.usage?.addOnQuota], ['组织额度', result.usage?.orgResourcePackage]].filter(([, p]) => p).map(([name, p]) => ({ ...p, name }));
@@ -156,17 +144,60 @@ export async function createAccountClient(account, config, attachments) {
 }
 
 export async function claimTraeCheckin(usage, signal) {
+  let submitted = false;
   try {
     const status = await usage.checkinStatus(signal);
     if (status.checkedIn) return { status: 'already-claimed' };
     if (status.didCheckedIn) return { status: 'device-used' };
     if (!status.enabled) return { status: 'no-campaign' };
+    submitted = true;
     const claim = await usage.claimCheckin(signal);
     if (claim.code === 9095) return { status: 'device-used' };
     if (!claim.claimed) return { status: 'paused' };
     // A success response is authoritative; do not turn a failed follow-up balance read into a retry.
     return { status: 'claimed', ...(Number.isFinite(status.credits) ? { amount: status.credits + (status.extraCredits || 0) } : {}) };
   } catch (e) {
-    return { status: [401, 403, 429].includes(e.status) ? 'paused' : 'uncertain' };
+    return checkinFailure(e, submitted);
   }
+}
+
+export function createQoderCheckin(region, getPat, { fetchImpl = (...args) => fetch(...args), now = Date.now } = {}) {
+  const guardedFetch = async (url, options) => {
+    try {
+      const response = await fetchImpl(url, options);
+      // No metadata/auth healing retries in a check-in operation; preserve status without raw bodies.
+      if (!response.ok) throw new QoderLlmError('checkin_http_error', 'PROVIDER_ERROR', { status: response.status });
+      if (String(url).endsWith('/campaigns') && !Array.isArray((await response.clone().json()).campaigns)) throw Error('checkin_campaigns_invalid');
+      return response;
+    } catch (error) {
+      if (error instanceof QoderLlmError) throw error;
+      throw new QoderLlmError('checkin_network_error', 'PROVIDER_ERROR');
+    }
+  };
+  const auth = new QoderAuthService({ region, fetch: guardedFetch, resolveMachineId: () => getMachineId() });
+  const campaigns = new QoderCheckInService({ region, authService: auth, fetch: guardedFetch });
+  const credentials = async signal => auth.getCredentials(await getPat(), signal);
+  return {
+    identity: async signal => ({ account: (await credentials(signal)).userID }),
+    claim: async signal => {
+      let submitted = false;
+      try {
+        const token = (await credentials(signal)).authToken;
+        const rows = await campaigns.fetchCampaigns(token, signal), time = now();
+        const benefits = rows.filter(c => c.actionType === 'CLAIM_BENEFIT');
+        const active = benefits.filter(c => (!Number.isFinite(c.startAt) || c.startAt * 1000 <= time)
+          && (!Number.isFinite(c.endAt) || c.endAt * 1000 > time));
+        const target = active.find(c => c.claimStatus === 'CLAIMABLE' && typeof c.campaignId === 'string' && c.campaignId);
+        if (!target) {
+          if (active.some(c => c.claimStatus === 'CLAIMED')) return { status: 'already-claimed' };
+          return { status: benefits.some(c => c.startAt * 1000 > time || c.endAt * 1000 <= time) ? 'before-window' : 'no-campaign' };
+        }
+        submitted = true;
+        const result = await campaigns.claimCampaign(token, target.campaignId, signal);
+        if (result.status !== 'CLAIMED') return { status: 'paused' };
+        return { status: result.replayed ? 'already-claimed' : 'claimed',
+          ...(Number.isFinite(result.benefit?.amount) && result.benefit.amount >= 0 ? { amount: result.benefit.amount } : {}) };
+      } catch (error) { return checkinFailure(error, submitted); }
+    },
+  };
 }

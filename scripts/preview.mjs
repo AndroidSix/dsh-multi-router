@@ -18,7 +18,8 @@ const router = new Router(validateConfig(raw, file), async a => ({ models: async
   { id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxTokens: 64000 },
 ] , checkin: a.provider === 'workbuddy' ? undefined : {
   identity: async () => ({ account: a.id, ...(a.provider === 'trae' ? { device: 'preview-official-device' } : {}) }),
-  claim: async () => ({ status: 'claimed', amount: a.provider === 'trae' ? 100 : 50 }),
+  claim: async () => process.env.DSH_PREVIEW_RETRY === '1' ? { status: a.provider === 'trae' ? 'retryable' : 'no-campaign' }
+    : { status: 'claimed', amount: a.provider === 'trae' ? 100 : 50 },
 } }));
 await writePrivateJson(join(dir, 'package.json'), { dependencies: { 'dsh-multi-router': 'github:AndroidSix/dsh-multi-router', 'dsh-git-panel': '^0.1.20', 'dsh-other-plugin': 'next' } });
 const previewBundles = [
