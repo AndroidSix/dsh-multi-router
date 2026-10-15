@@ -39,11 +39,13 @@ async function locks(dir) {
 }
 async function publicJson(url, fetchImpl, signal) {
   const res = await fetchImpl(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(12000)]),
-    headers: { Accept: 'application/json', 'User-Agent': 'dsh-multi-router-plugin-updates' }, redirect: 'error' });
+    // Request only the SHA: the default JSON includes file patches and can be megabytes.
+    headers: { Accept: 'application/vnd.github.sha', 'User-Agent': 'dsh-multi-router-plugin-updates' }, redirect: 'error' });
   if (!res.ok) throw Error(res.status === 403 || res.status === 429 ? '远端限流，请稍后重试' : res.status === 404 ? '仓库 / 版本不存在，或需要私有仓库授权' : `网络请求失败（HTTP ${res.status}）`);
   let size = 0, chunks = [];
   for await (const chunk of res.body) { size += chunk.byteLength; if (size > 256 * 1024) throw Error('更新元数据过大'); chunks.push(Buffer.from(chunk)); }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  return /^[a-f0-9]{40}$/i.test(text) ? { sha: text } : JSON.parse(text);
 }
 const short = sha => sha?.slice(0, 8);
 async function registryVersion(service, profile, spec, signal) {

@@ -122,3 +122,17 @@ test('Git installs never report success when a zero exit leaves the old locked c
   assert.equal(updater.job.results[0].status, 'failed');
   assert.match(updater.job.results[0].message, /提交/);
 });
+
+test('GitHub checks request SHA-only media instead of downloading large commit patches', async t => {
+  const { updater } = await fixture(t);
+  updater.fetchImpl = async (url, options) => {
+    assert.equal(options.headers.Accept, 'application/vnd.github.sha');
+    return new Response((url.includes('/pinned/') ? sha : latest) + '\n');
+  };
+  updater.check(); await updater.flight;
+  assert.equal(updater.rows.find(r => r.name === 'dsh-multi-router').latestCommit, latest);
+  assert.equal(updater.rows.find(r => r.name === 'dsh-multi-router').status, 'available');
+  updater.fetchImpl = async () => new Response('invalid-sha');
+  updater.check(); await updater.flight;
+  assert.equal(updater.rows.find(r => r.name === 'dsh-multi-router').status, 'failed');
+});

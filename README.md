@@ -6,7 +6,7 @@
 
 一个插件内置 WorkBuddy、Trae、Qoder 的认证、模型发现和聊天传输，提供三家的多账号池及集中路由。运行不依赖原来三个 DSH 插件；三家代码随安装包一起打包。基于 MIT 上游，固定版本见 `upstream-lock.json`，许可见 `THIRD_PARTY_NOTICES.md`。
 
-版本：0.5.0。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
+版本：0.5.1。适配 DSH Desktop / Web 0.2.0-rc.2，Node.js ^22.19.0 或 >=24。
 
 ## 在 DSH 里管理
 
@@ -135,7 +135,7 @@ dsh plugin --profile desktop add dsh-multi-router
 dsh plugin --profile web add dsh-multi-router
 ```
 
-包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.0`。
+包地址：[dsh-multi-router · npm](https://www.npmjs.com/package/dsh-multi-router)。正式版本由 GitHub Release 自动测试、打包并发布到 npm `latest`，包中已包含编译产物，用户无需自行构建。需要固定版本时可安装 `dsh-multi-router@0.5.1`。
 
 已使用 npm 来源的用户更新：
 
@@ -192,7 +192,7 @@ cd dsh-multi-router
 npm ci
 npm run check
 npm run pack:release
-dsh plugin --profile desktop add ./dsh-multi-router-0.5.0.tgz
+dsh plugin --profile desktop add ./dsh-multi-router-0.5.1.tgz
 ```
 
 ### 配置账号
