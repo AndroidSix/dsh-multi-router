@@ -56,12 +56,13 @@ function installFailure(result) {
   const text = [result.error?.diagnostic, result.packageResult?.output, result.packageResult?.kind].filter(v => typeof v === 'string').join('\n');
   let reason = 'unknown', message = '安装未完成；请在 DSH 原生插件页查看安装日志，或复制下方诊断信息。';
   if (result.application === 'cancelled') { reason = 'cancelled'; message = '安装已取消，可重新检查后重试。'; }
+  else if (/ERR_PNPM_(?:MINIMUM_RELEASE_AGE_VIOLATION|NO_MATURE_MATCHING_VERSION)|minimumReleaseAge/i.test(text)) { reason = 'release-age'; message = '新版本尚在安装器的新包等待期内。输入包名可能选中旧版，指定新版本可能被拒绝；请等待策略规定的时间后重试，或由用户明确为该版本设置例外。换镜像或重启不会解除此限制。'; }
   else if (result.pendingBuilds?.length) { reason = 'build'; message = '依赖构建脚本需要授权，请到 DSH 插件安装页允许这些脚本后重试。'; }
   else if (result.error?.code === 'incompatible-version') { reason = 'compatibility'; message = '插件与当前 DSH 不兼容，请先升级 DSH 或选择兼容版本。'; }
   else if (/\b(?:EPERM|EBUSY|EACCES)\b|resource busy|file.*(?:locked|in use)/i.test(text)) { reason = 'files'; message = '插件文件被占用或目录权限不足，安装未完成。请先在 DSH 停用该插件后重试，并检查安装目录权限；仍被占用时需退出托盘应用。'; }
   else if (/HMR transactions cannot be nested|activation|did not activate|entry.*activate/i.test(text)) { reason = 'activation'; message = '插件加载失败。请检查 DSH 插件页的组件错误，再关闭并重新启用；安装与加载是两个独立步骤。'; }
   else if (result.packageResult?.timedOut || /\b(?:ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED)\b|network|fetch|download/i.test(text)) { reason = 'network'; message = '插件下载或网络请求失败，安装未完成。npm 来源可切换到「npm 官方」后重试；GitHub 来源请检查 GitHub 网络连接。'; }
-  const code = /\b(?:EPERM|EBUSY|EACCES|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED)\b/.exec(text)?.[0]
+  const code = /\b(?:ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION|ERR_PNPM_NO_MATURE_MATCHING_VERSION|EPERM|EBUSY|EACCES|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED)\b/.exec(text)?.[0]
     ?? (['operation-error', 'incompatible-version'].includes(result.error?.code) ? result.error.code : 'unknown');
   return { status: 'failed', application: result.application, message, diagnostic: {
     reason, code, platform: process.platform, stage: reason === 'activation' ? 'activation' : 'install',

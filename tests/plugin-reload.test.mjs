@@ -62,3 +62,20 @@ test('Windows CRLF patch files still activate the new host and settings without 
   await reload.check();
   assert.deepEqual(calls, [['dsh-multi-router', true]], 'Windows text line endings must not suppress live reload');
 });
+
+test('a package replacement is not activated when the profile still declares the previous exact version', async t => {
+  const { reload, calls, dir } = await fixture(t);
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ dependencies: { 'dsh-multi-router': '0.5.7' }, dsh: { profile: { bundles: ['dsh-multi-router'] } } }));
+  await reload.check(); assert.equal(calls.length, 0, 'files from an incomplete or rolled-back installation must not be activated');
+  assert.equal(reload.state().phase, 'waiting');
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ dependencies: { 'dsh-multi-router': '0.5.8' }, dsh: { profile: { bundles: ['dsh-multi-router'] } } }));
+  await reload.check(); assert.equal(calls.length, 1);
+});
+
+test('an external installer holding the official profile lock finishes before live reload begins', async t => {
+  const { reload, calls, dir } = await fixture(t);
+  await writeFile(join(dir, 'package.json.lock'), `${process.pid}\n`);
+  await reload.check(); assert.equal(calls.length, 0); assert.equal(reload.state().phase, 'waiting');
+  await rm(join(dir, 'package.json.lock'));
+  await reload.check(); assert.equal(calls.length, 1);
+});

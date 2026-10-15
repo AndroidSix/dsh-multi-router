@@ -212,6 +212,7 @@ test('install failures explain Windows file locks and network errors without exp
     [`EPERM: rename ${secret}`, 'files', /文件.*占用|权限/],
     [`ETIMEDOUT downloading ${secret}`, 'network', /网络|下载/],
     [`HMR transactions cannot be nested ${secret}`, 'activation', /加载/],
+    [`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION: minimumReleaseAge ${secret}`, 'release-age', /等待期/],
     [`unknown exception ${secret}`, 'unknown', /安装日志/],
   ]) {
     service.installBundle = async () => ({ application: 'failed', error: { code: 'operation-error', diagnostic } });

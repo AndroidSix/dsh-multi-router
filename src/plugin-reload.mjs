@@ -51,6 +51,16 @@ export class PluginReload {
     if (installed.name !== 'dsh-multi-router' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(installed.version)) return;
     this.installedVersion = installed.version;
     if (installed.version === this.runningVersion) { this.phase = 'current'; this.message = undefined; return; }
+    const declared = manifest.dependencies?.['dsh-multi-router'];
+    const exact = typeof declared === 'string' && /^(?:npm:dsh-multi-router@)?(\d+\.\d+\.\d+(?:-[\w.-]+)?)$/.exec(declared)?.[1];
+    let installing = false;
+    const pid = Number(await readFile(join(dir, 'package.json.lock'), 'utf8').catch(() => ''));
+    if (Number.isInteger(pid) && pid > 0) try { process.kill(pid, 0); installing = true; } catch (e) { installing = e.code !== 'ESRCH'; }
+    if (installing || exact && exact !== installed.version) {
+      this.phase = 'waiting'; this.message = '安装事务尚未完成，或安装失败已回滚；等待配置与文件版本一致后再加载。';
+      if (installing) this.schedule(1000);
+      return;
+    }
     if (!this.canReload() || !this.service()?.setBundleEnabled) { this.phase = 'restart-required'; this.message = '当前 DSH 未提供运行中重载，请升级 DSH 或重启应用。'; return; }
     if (this.busy()) { this.phase = 'waiting'; this.message = '新版本已安装，等待当前请求和账号操作结束后自动生效。'; this.schedule(1000); return; }
     const root = join(dir, 'node_modules/dsh-multi-router');
