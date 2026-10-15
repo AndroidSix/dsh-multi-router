@@ -41,7 +41,7 @@ export async function apply(ctx, options = {}) {
     await manager.load();
     if (disposed) return;
     manager.startup = { phase: 'discovering' };
-    manager.runtime = new PluginReload({ runningVersion: pluginVersion, service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext'), canReload: () => !!ctx.get('hmr'),
+    manager.runtime = new PluginReload({ runningVersion: pluginVersion, service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext'), canReload: () => !!ctx.get('hmr'), hmr: () => ctx.get('hmr'),
       busy: () => !!(manager.localScan || manager.requests || manager.plugins.flight || manager.checkins.flight || manager.workbuddyLogin.flight || manager.workbuddyLogin.pending || manager.refreshes.size || manager.monitorFlights.size || shims.some(s => s.active())) });
     ctx.inject?.(['webServer'], webCtx => {
       webCtx.effect(() => webCtx.webServer.register({ kind: 'exact', path: MANAGEMENT_PATH, handler: managementHandler(manager) }));

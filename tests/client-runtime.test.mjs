@@ -104,7 +104,7 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   for (const label of ['模型用时', '工具调用用时', 'TTFT', 'TPS', '未经过 DSH 步骤']) assert.ok(usage.includes(label));
   module.apply({ slots: { inject(name, fn) { assert.ok(['plugins.bundle.config', 'shell.overlay'].includes(name)); fn(); },
     register(options, component) { registered = { options, component }; } } });
-  assert.equal(registered.options.key, 'dsh-multi-router-updates');
+  assert.equal(registered.options.id, 'dsh-multi-router-updates');
   assert.equal(registered.component, module.UpdateReminder);
   await assert.rejects(module.readManagementResponse(new Response('', { status: 404 })), /插件后台未就绪（HTTP 404）/);
   await assert.rejects(module.readManagementResponse(new Response('<html>Not found</html>', { status: 503 })), /插件后台未就绪（HTTP 503）/);

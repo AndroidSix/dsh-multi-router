@@ -4,9 +4,17 @@ import { join } from 'node:path';
 
 // Let DSH reconcile its profile; never alter the host's module caches. Release
 // specific host specifiers turn both its server and browser module generations.
+// A plugin activated by HMR inherits its AsyncLocalStorage marker in timers
+// and file watchers, even after activation finishes. Exit only that inherited
+// marker before entering the official queue; serialization stays with DSH.
+export function outsideActivation(hmr, operation) {
+  const scope = hmr?.executing;
+  return typeof scope?.exit === 'function' ? scope.exit(operation) : operation();
+}
+
 export class PluginReload {
-  constructor({ service, profile, canReload, busy = () => false, now = Date.now, runningVersion }) {
-    Object.assign(this, { service, profile, canReload, busy, now, runningVersion });
+  constructor({ service, profile, canReload, hmr = () => undefined, busy = () => false, now = Date.now, runningVersion }) {
+    Object.assign(this, { service, profile, canReload, hmr, busy, now, runningVersion });
     this.phase = 'current'; this.installedVersion = runningVersion; this.retryAt = 0;
   }
   state() { return { runningVersion: this.runningVersion, installedVersion: this.installedVersion, phase: this.phase, canReload: !!this.canReload(), message: this.message }; }
@@ -52,7 +60,7 @@ export class PluginReload {
     try {
       // This call disposes this plugin. Its disposer must not await this task;
       // own update jobs must already have persisted and settled before entering.
-      const result = await this.service().setBundleEnabled('dsh-multi-router', true);
+      const result = await outsideActivation(this.hmr(), () => this.service().setBundleEnabled('dsh-multi-router', true));
       if (this.closed) return;
       this.phase = 'restart-required';
       this.message = result.application === 'applied' ? 'DSH 尚未切换到新版本，请重新加载插件或查看组件错误。' : 'DSH 未能重载插件，请升级 DSH 或重启应用。';

@@ -4,9 +4,12 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { outsideActivation } from '../src/plugin-reload.mjs';
 const runtime = process.env.DSH_RUNTIME ?? '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh';
 const { boot, loadProfileDirectory, readProfilePatches } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`);
 const { ClientModuleRegistry } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js`);
+const { default: Hmr } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-hmr/lib/index.js`);
 const { PluginManager } = await import(`${runtime}/node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js`);
 const dir = await mkdtemp(join(tmpdir(), 'dsh-live-reload-'));
 let ctx;
@@ -37,7 +40,8 @@ try {
   Object.assign(service, { profile, ownerContext: ctx, managementBundles: new Set(), abort: new AbortController(), lockWaitMs: 1000 });
   Object.defineProperty(service, 'ctx', { value: ctx });
   // The real reload transaction is used; the fixture needs no file watcher.
-  ctx.provide('hmr', { runExclusive: operation => operation() });
+  const hmr = Object.assign(Object.create(Hmr.prototype), { executing: new AsyncLocalStorage(), operations: Promise.resolve(), closing: false });
+  ctx.provide('hmr', hmr);
   await generation('1.0.1');
   const result = await service.setBundleEnabled('dsh-multi-router', true);
   assert.equal(result.application, 'applied', JSON.stringify(result));
@@ -51,7 +55,15 @@ try {
   assert.equal(resource.status, 200);
   assert.match(String(resource.body), /1\.0\.1/);
   await generation('1.0.2');
-  assert.equal((await service.setBundleEnabled('dsh-multi-router', true)).application, 'applied');
+  // An updater installed during a previous HMR activation inherits the marker
+  // in its timer. It must leave that marker and still enter the official queue.
+  let inheritedReload;
+  await hmr.runExclusive(() => {
+    inheritedReload = new Promise((resolve, reject) => setTimeout(() => {
+      outsideActivation(hmr, () => service.setBundleEnabled('dsh-multi-router', true)).then(resolve, reject);
+    }, 1));
+  });
+  assert.equal((await inheritedReload).application, 'applied');
   assert.equal(ctx.get('fixtureVersion'), '1.0.2');
   assert.deepEqual(disposed, ['1.0.0', '1.0.1']);
   assert.notEqual(ctx.get('clientModules').graph().rev, graph.rev);

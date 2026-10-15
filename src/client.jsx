@@ -53,7 +53,7 @@ const styles = `
 
 @media(prefers-reduced-motion:reduce){.mr *{transition:none!important}}
 `;
-export function apply(ctx) { reloadFromHost = () => requestPluginReload(ctx.get?.('remote')); ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-multi-router' }, RouterPage)); ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', key: 'dsh-multi-router-updates' }, UpdateReminder)); }
+export function apply(ctx) { reloadFromHost = () => requestPluginReload(ctx.get?.('remote')); ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-multi-router' }, RouterPage)); ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'dsh-multi-router-updates' }, UpdateReminder)); }
 function Modal({ title, close, children, busy }) {
   const ref = useRef(null);
   useEffect(() => { const dialog = ref.current; dialog.showModal(); return () => dialog.close(); }, []);
