@@ -16,7 +16,7 @@ const parse = createRequire(`${runtime}/package.json`)('yaml').parse;
 const profile = source ? null : loadProfileDirectory('dsh', dir, `${runtime}/package.json`);
 const rows = source ? composeEntries([parse(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))])
   : composeEntries([...profile.layers.map(l => l.patches), profile.patches]);
-const entry = rows.find(r => r.id === 'llm-multi-router-v2');
+const entry = rows.find(r => r.id?.startsWith('llm-multi-router-v2'));
 assert.ok(entry && !entry.disabled, '统一插件宿主未启用');
 const registry = Object.create(ClientModuleRegistry.prototype);
 registry.ctx = { loader: {} }; registry.pkgMeta = new Map();

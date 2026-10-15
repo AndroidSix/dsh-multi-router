@@ -23,7 +23,7 @@ const router = new Router(validateConfig(raw, file), async a => ({ models: async
 } }));
 await writePrivateJson(join(dir, 'package.json'), { dependencies: { 'dsh-multi-router': 'github:AndroidSix/dsh-multi-router', 'dsh-git-panel': '^0.1.20', 'dsh-other-plugin': 'next' } });
 const previewBundles = [
-  { name: 'dsh-multi-router', version: '0.5.5', installed: true, removable: true, enabled: true },
+  { name: 'dsh-multi-router', version: '0.5.7', installed: true, removable: true, enabled: true },
   { name: 'dsh-git-panel', version: '0.1.20', installed: true, removable: true, enabled: true },
   { name: 'dsh-other-plugin', version: '1.0.0', installed: true, removable: true, enabled: false },
   { name: '@deepseek-ai/dsh-base', version: '0.2.0-rc.2', installed: false, removable: false, enabled: true },
@@ -68,6 +68,7 @@ if (process.env.DSH_PREVIEW_UPDATES === '1') { manager.plugins.check(); await ma
 
 
 const api = managementHandler(manager);
+let startupAt = 0;
 const result = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
 import {RouterPage,UpdateReminder} from './src/client.jsx'; ${previewNow ? `Date.now = () => ${previewNow};` : ''} createRoot(document.getElementById('app')).render(React.createElement(React.Fragment,null,React.createElement(RouterPage),${process.env.DSH_PREVIEW_UPDATES === '1' ? 'React.createElement(UpdateReminder)' : 'null'}));`,
   resolveDir: process.cwd(), loader: 'jsx' }, bundle: true, platform: 'browser', format: 'esm', write: false, jsx: 'automatic' });
@@ -75,7 +76,12 @@ const script = result.outputFiles[0].text;
 const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DSH Multi Router · 设置预览</title>
 <style>:root{--dsw-alias-label-primary:#ececf0;--dsw-alias-label-secondary:#b7b7c1;--dsw-alias-border-l2:#35353c;--dsw-alias-bg-layer-1:#202024;--dsw-alias-bg-module-platform:#18181c;--dsw-alias-state-active-primary:#3d73dc}body{margin:0;padding:32px;background:#111114;font:14px system-ui;color:#ececf0}#app{max-width:1040px;margin:auto}@media(max-width:700px){body{padding:16px}}</style><p style="color:#b7b7c1;text-align:center">演示数据 · 账号已脱敏 · 无真实请求或领取${previewNow ? ' · 模拟北京时间 12:00' : ''}</p><div id="app"></div><script type="module" src="/app.js"></script></html>`;
 const server = createServer((req, res) => {
-  if (req.url === MANAGEMENT_PATH) { void api(req, res); return; }
+  if (req.url === MANAGEMENT_PATH) {
+    if (process.env.DSH_PREVIEW_STARTUP === '1') startupAt ||= Date.now();
+    if (startupAt && Date.now() - startupAt < 5000 && req.method === 'GET') { res.writeHead(404); res.end(); return; }
+    manager.startup = { phase: startupAt && Date.now() - startupAt < 15000 ? 'discovering' : 'ready' };
+    void api(req, res); return;
+  }
   res.writeHead(200, { 'Content-Type': req.url === '/app.js' ? 'text/javascript' : 'text/html' });
   const light = ':root{--dsw-alias-label-primary:#18191c;--dsw-alias-label-secondary:#62646c;--dsw-alias-border-l2:#dfe1e6;--dsw-alias-bg-layer-1:#f7f8fa;--dsw-alias-bg-module-platform:#ffffff;--dsw-alias-state-active-primary:#3864cb;--dsw-alias-state-success-primary:#167943;--dsw-alias-state-warning-primary:#986800;--dsw-alias-state-error-primary:#bf3030}body{background:#fff;color:#18191c}';
   res.end(req.url === '/app.js' ? script : req.url.includes('theme=light') ? html.replace('</style>', light + '</style>') : html);

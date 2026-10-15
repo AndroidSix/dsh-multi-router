@@ -31,14 +31,13 @@ const answer = () => new Response('data: {"id":"test","object":"chat.completion.
 
 test('first activation in a fresh home creates private config and a usable management panel', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'router-first-install-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'new-home', 'multi-router', 'router.json');
   let handler; const disposers = [], adapters = new Map();
   const effect = cb => disposers.push(cb());
   const ctx = { on() {}, get: () => undefined, effect, emit() {}, logger: { info() {}, warn() {}, error() {} },
     inject(ids, cb) { cb({ effect, webServer: { register(options) { handler = options.handler; return () => {}; } } }); },
     llm: { registerAdapter(ids, adapter) { adapters.set(ids[0], adapter); return () => adapters.delete(ids[0]); } } };
-  t.after(async () => { for (const dispose of disposers.reverse()) await dispose?.(); });
+  t.after(async () => { for (const dispose of disposers.reverse()) await dispose?.(); await rm(dir, { recursive: true, force: true }); });
   await apply(ctx, { configFile: file });
   assert.equal(adapters.size, 7);
   assert.equal(typeof handler, 'function');
@@ -57,7 +56,6 @@ test('first activation in a fresh home creates private config and a usable manag
 
 test('real DSH adapter streams through WorkBuddy account failover and unregisters', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'multi-router-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const accounts = [];
   for (const id of ['wb1', 'wb2']) {
     const file = join(dir, `${id}.json`); await writePrivateJson(file, wbCredential(id));
@@ -76,7 +74,6 @@ test('real DSH adapter streams through WorkBuddy account failover and unregister
     }
     throw new Error('Unexpected network request in test');
   };
-  t.after(() => { globalThis.fetch = realFetch; });
   let adapter, dispose, released = false;
   const adapters = new Map();
   const logs = [], listeners = {};
@@ -84,7 +81,7 @@ test('real DSH adapter streams through WorkBuddy account failover and unregister
     logger: { info: (...x) => logs.push(x.join(' ')), error: (...x) => logs.push(x.join(' ')) },
     llm: { registerAdapter(ids, value) { assert.equal(ids.length, 1); adapters.set(ids[0], value);
       if (ids[0] === 'multi-router') adapter = value; return () => { adapters.delete(ids[0]); if (ids[0] === 'multi-router') released = true; }; } } };
-  t.after(() => dispose?.());
+  t.after(async () => { await dispose?.(); globalThis.fetch = realFetch; await rm(dir, { recursive: true, force: true }); });
   await apply(ctx, { configFile: file });
   assert.equal(adapters.size, 7);
   assert.ok(!(await adapter.listModels('multi-router')).some(m => m.id === 'free')); // Legacy mixed Free is hidden.
@@ -118,7 +115,6 @@ test('real DSH adapter streams through WorkBuddy account failover and unregister
 
 test('real DSH adapter offers full modes and keeps Default, Off and free defaults distinct per concurrent call', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'router-efforts-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const accounts = [];
   for (const id of ['wb1', 'wb2']) { const credentialFile = join(dir, `${id}.json`); await writePrivateJson(credentialFile, wbCredential(id)); accounts.push({ id, provider: 'workbuddy', credentialFile }); }
   const modelId = 'deepseek-v4.1-flash';
@@ -141,11 +137,11 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
     if (String(url).endsWith('/v2/chat/completions')) { wire.push({ token: options.headers.Authorization, effort: JSON.parse(options.body).reasoning_effort }); return answer(); }
     throw new Error('Unexpected endpoint in reasoning test');
   };
-  t.after(() => { globalThis.fetch = realFetch; });
   let dispose; const adapters = new Map();
   const ctx = { on() {}, get: () => undefined, effect: cb => { dispose = cb(); }, emit: () => {}, logger: { info() {}, warn() {}, error() {} },
     llm: { registerAdapter(ids, value) { adapters.set(ids[0], value); return () => adapters.delete(ids[0]); } } };
-  await apply(ctx, { configFile: file }); t.after(() => dispose?.());
+  t.after(async () => { await dispose?.(); globalThis.fetch = realFetch; await rm(dir, { recursive: true, force: true }); });
+  await apply(ctx, { configFile: file });
   await adapters.get('workbuddy').listModels('workbuddy'); // Wait for the real account catalogs.
   const adapter = adapters.get('multi-router');
   assert.equal((await adapter.listModels('multi-router'))[0].id, freeId);

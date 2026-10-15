@@ -36,12 +36,20 @@ test('fresh installation automatically captures local WorkBuddy and Trae SOLO lo
   });
   const file = join(home, 'router', 'router.json');
   await apply(ctx, { configFile: file });
+  // Discovery now runs after activation; wait for its persisted completion, not
+  // a fixed sleep or a desktop/network dependent activation timeout.
+  for (let i = 0; ; i++) {
+    const setup = await readFile(join(home, 'router', 'initial-setup.json'), 'utf8').catch(() => '');
+    if (setup) break;
+    assert.ok(i < 100, 'automatic discovery should finish');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
   const raw = JSON.parse(await readFile(file, 'utf8'));
   assert.deepEqual(raw.accounts.map(a => a.provider).sort(), ['trae', 'workbuddy']);
   let state;
   await handler({ method: 'GET', headers: { host: 'localhost' }, socket: { remoteAddress: '127.0.0.1' } }, { writeHead() {}, end(text) { state = JSON.parse(text); } });
   assert.equal(state.accounts.length, 2);
-  assert.ok(state.setup.completedAt, 'first-install setup completes before the panel loads');
+  assert.ok(state.setup.completedAt, 'first-install setup is persisted after background discovery');
   assert.equal(state.setup.dismissed, false);
   assert.equal(state.localDiscovery.find(s => s.provider === 'workbuddy').savedCount, 1);
   assert.equal(state.localDiscovery.find(s => s.provider === 'trae').savedCount, 1);

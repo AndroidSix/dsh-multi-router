@@ -57,6 +57,18 @@ test('batch updates keep disabled selections, preserve Git branch tracking, and 
   assert.equal(updater.state().job.results.every(r => r.restartRequired), true);
 });
 
+test('own updates schedule reload after installation; other plugins retain the host activation outcome', async t => {
+  const { updater } = await fixture(t);
+  const scheduled = [];
+  updater.onInstalled = name => { assert.ok(updater.flight, 'reload must be deferred until this job settles'); scheduled.push(name); return name === 'dsh-multi-router'; };
+  updater.check(); await updater.flight;
+  updater.update(['dsh-multi-router', 'other-plugin']); await updater.flight;
+  assert.deepEqual(scheduled, ['other-plugin', 'dsh-multi-router']);
+  assert.equal(updater.job.results[0].restartRequired, true);
+  assert.equal(updater.job.results[1].restartRequired, false);
+  assert.equal(updater.job.results[1].application, 'reload-pending');
+});
+
 test('bundled packages are excluded even with manifest entries; scoped user plugins and disabled installs remain', async t => {
   const { updater, dir, deps, bundles, checks } = await fixture(t);
   await writePrivateJson(join(dir, 'package.json'), { dependencies: { ...deps, '@deepseek-ai/dsh-base': '1.0.0', 'bundled-manager': '1.0.0', '@scope/user-plugin': '^1.0.0' } });

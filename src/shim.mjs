@@ -7,6 +7,7 @@ import { RouteError } from './router.mjs';
 import { REASONING_EFFORTS } from './reasoning.mjs';
 
 export function createShim(router, { modelPrefix = '' } = {}) {
+  let active = 0;
   const secret = randomBytes(32).toString('base64url');
   const server = createServer((req, res) => { void handle(req, res); });
   const ready = new Promise((resolve, reject) => {
@@ -17,6 +18,7 @@ export function createShim(router, { modelPrefix = '' } = {}) {
     res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value));
   };
   async function handle(req, res) {
+    active++;
     const controller = new AbortController();
     req.on('aborted', () => controller.abort());
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
@@ -61,8 +63,10 @@ export function createShim(router, { modelPrefix = '' } = {}) {
         message: error instanceof RouteError ? error.message : 'Router request failed',
         hint: error instanceof RouteError ? error.hint : undefined,
         attempts: error instanceof RouteError ? error.attempts : [] } });
-    }
+    } finally { active--; }
   }
-  return { ready, token: () => secret, baseUrl: () => `http://127.0.0.1:${server.address().port}`,
-    close: async () => { await ready.catch(() => {}); await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); } };
+  return { ready, active: () => active, token: () => secret, baseUrl: () => `http://127.0.0.1:${server.address().port}`,
+    // Stop accepting new work, let an already streaming response finish. A
+    // reload can race a call that began immediately after the idle check.
+    close: async () => { await ready.catch(() => {}); await new Promise(resolve => server.close(resolve)); } };
 }

@@ -9,22 +9,24 @@ import { SessionMetrics } from './telemetry.mjs';
 import { Router, abortable } from './router.mjs';
 import { createShim } from './shim.mjs';
 import { Manager, managementHandler, MANAGEMENT_PATH } from './manager.mjs';
+import { PluginReload } from './plugin-reload.mjs';
+import { version as pluginVersion } from '../package.json';
 
 export const name = 'dsh-multi-router';
 export const inject = ['llm'];
 export const defaultConfigFile = () => join(resolveDshHome(), 'multi-router', 'router.json');
 export const Config = z.object({ configFile: z.string().description('Absolute path to multi-account router.json') });
 export async function apply(ctx, options = {}) {
-  let disposed = false, manager, stopWatch, monitorTimer;
+  let disposed = false, manager, stopWatch, monitorTimer, startup;
   const releases = [], shims = [], wrappers = [];
   ctx.effect(() => () => {
-    disposed = true; stopWatch?.(); clearInterval(monitorTimer);
+    disposed = true; stopWatch?.(); clearInterval(monitorTimer); manager?.runtime?.stop();
     if (manager) manager.closed = true;
     manager?.plugins.abort.abort();
     manager?.checkins.abort.abort();
     manager?.workbuddyLogin.abort.abort();
     for (const release of releases) release();
-    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), manager?.localScan, manager?.checkins.flight, manager?.plugins.flight, manager?.plugins.saveQueue.catch(() => {}), manager?.telemetry.queue.catch(() => {})]);
+    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), startup, manager?.localScan, manager?.checkins.flight, manager?.plugins.flight, manager?.plugins.saveQueue.catch(() => {}), manager?.telemetry.queue.catch(() => {})]);
   });
   const file = resolve(options.configFile ?? process.env.DSH_MULTI_ROUTER_CONFIG ?? defaultConfigFile());
   try {
@@ -37,21 +39,16 @@ export async function apply(ctx, options = {}) {
       ctx.emit('llm/adapters-updated');
     }, { service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext') });
     await manager.load();
+    if (disposed) return;
+    manager.startup = { phase: 'discovering' };
+    manager.runtime = new PluginReload({ runningVersion: pluginVersion, service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext'), canReload: () => !!ctx.get('hmr'),
+      busy: () => !!(manager.localScan || manager.requests || manager.plugins.flight || manager.checkins.flight || manager.workbuddyLogin.flight || manager.workbuddyLogin.pending || manager.refreshes.size || manager.monitorFlights.size || shims.some(s => s.active())) });
+    ctx.inject?.(['webServer'], webCtx => {
+      webCtx.effect(() => webCtx.webServer.register({ kind: 'exact', path: MANAGEMENT_PATH, handler: managementHandler(manager) }));
+    });
     const metrics = new SessionMetrics(manager.telemetry);
     ctx.on('session/event', (session, event) => { try { return metrics.event(session, event)?.catch(() => ctx.logger.warn('multi-router: performance persistence failed')); } catch { ctx.logger.warn('multi-router: performance event unavailable'); } });
     ctx.on('session/disposed', session => metrics.dispose(session));
-    await manager.syncLocalAccounts().catch(() => ctx.logger.warn('multi-router: local login discovery failed; manual import remains available'));
-    await manager.finishInitialSetup().catch(() => ctx.logger.warn('multi-router: first-install guidance could not be saved'));
-    manager.checkins.tick();
-    void manager.plugins.tick().catch(() => ctx.logger.warn('multi-router: automatic update check unavailable'));
-    if (disposed) return;
-    void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
-    void manager.monitorAll().catch(() => ctx.logger.warn('multi-router: usage persistence failed'));
-    monitorTimer = setInterval(() => { void manager.syncLocalAccounts().then(() => manager.monitorAll()).catch(() => ctx.logger.warn('multi-router: local login discovery or usage persistence failed'));
-      manager.checkins.tick();
-      void manager.plugins.tick().catch(() => ctx.logger.warn('multi-router: automatic update check unavailable'));
-      void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed')); }, 60000);
-    monitorTimer.unref();
     for (const provider of ['multi-router', ...PROVIDERS]) {
       if (disposed) return;
       const isRouter = provider === 'multi-router';
@@ -97,12 +94,30 @@ export async function apply(ctx, options = {}) {
       releases.push(ctx.llm.registerAdapter([provider], wrapper.adapter));
     }
     stopWatch = manager.watch(() => ctx.logger.warn('multi-router: invalid config change; keeping last valid configuration'));
-    ctx.inject?.(['webServer'], webCtx => {
-      webCtx.effect(() => webCtx.webServer.register({ kind: 'exact', path: MANAGEMENT_PATH, handler: managementHandler(manager) }));
-    });
+    // Desktop helpers, network probes and inventory scans must not block the
+    // settings endpoint or activation. Cached routes are usable immediately.
+    startup = (async () => {
+      await manager.syncLocalAccounts().catch(() => ctx.logger.warn('multi-router: local login discovery failed; manual import remains available'));
+      if (disposed) return;
+      await manager.finishInitialSetup().catch(() => ctx.logger.warn('multi-router: first-install guidance could not be saved'));
+      if (disposed) return;
+      manager.startup = { phase: 'ready' };
+      manager.checkins.tick();
+      void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
+      void manager.monitorAll().catch(() => ctx.logger.warn('multi-router: usage persistence failed'));
+    })();
+    void manager.plugins.tick().catch(() => ctx.logger.warn('multi-router: automatic update check unavailable'));
+    manager.runtime.start();
+    ctx.on('plugin-manager/changed', () => manager.runtime.schedule());
+    monitorTimer = setInterval(() => { void manager.syncLocalAccounts().then(() => { if (!disposed) return manager.monitorAll(); }).catch(() => ctx.logger.warn('multi-router: local login discovery or usage persistence failed'));
+      manager.checkins.tick();
+      void manager.plugins.tick().catch(() => ctx.logger.warn('multi-router: automatic update check unavailable'));
+      void manager.checkFreeModels().catch(() => ctx.logger.warn('multi-router: free catalog persistence failed'));
+      void manager.runtime.check().catch(() => {}); }, 60000);
+    monitorTimer.unref();
     ctx.emit('llm/adapters-updated');
   } catch (error) {
-    clearInterval(monitorTimer); stopWatch?.(); for (const release of releases) release();
+    clearInterval(monitorTimer); stopWatch?.(); manager?.runtime?.stop(); for (const release of releases) release();
     await Promise.all(shims.map(shim => shim.close()));
     ctx.logger.error('multi-router: initialization failed', error.code ?? error.message);
     throw error;

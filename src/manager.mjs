@@ -46,7 +46,10 @@ export class Manager {
     this.catalogs = new Map(); this.catalogErrors = new Map(); this.refreshes = new Map();
     this.closed = false; this.monitorFlights = new Map(); this.loginInfo = new Map();
     this.telemetry = new Telemetry(join(dirname(file), 'usage.json'));
-    this.plugins = new PluginUpdates({ ...pluginAccess, stateFile: join(dirname(file), 'plugin-updates.json') });
+    this.plugins = new PluginUpdates({ ...pluginAccess, stateFile: join(dirname(file), 'plugin-updates.json'), onInstalled: name => {
+      if (name !== 'dsh-multi-router' || !this.runtime?.canReload()) return false;
+      this.runtime.schedule(); return true;
+    } });
     this.checkins = new Checkins(join(dirname(file), 'checkins.json'), this);
     this.workbuddyLogin = new WorkBuddyLogin(join(dirname(file), 'workbuddy-login.json'), { fetchImpl: pluginAccess.fetchImpl });
     this.setupFile = join(dirname(file), 'initial-setup.json');
@@ -61,7 +64,6 @@ export class Manager {
     this.config = validateConfig(this.raw, this.file);
     await this.checkins.load();
     await this.plugins.load();
-    if (this.plugins.state().available) await this.plugins.list().catch(() => { this.plugins.rows = []; });
     try {
       const saved = JSON.parse(await readFile(this.catalogFile, 'utf8'));
       for (const account of this.config.accounts) {
@@ -303,7 +305,7 @@ export class Manager {
   }
   state() {
     const status = this.router.status();
-    return { pluginVersion, revision: this.revision, localDiscovery: this.localDiscovery ?? [], setup: this.setup,
+    return { pluginVersion, startup: this.startup, runtime: this.runtime?.state(), revision: this.revision, localDiscovery: this.localDiscovery ?? [], setup: this.setup,
       pluginUpdates: this.plugins.state(),
       checkins: this.checkins.state(),
       telemetry: this.telemetry.state(),
@@ -323,6 +325,7 @@ export class Manager {
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (input.action === 'plugin.reload') { if (!this.runtime) bad('当前后台不支持重新加载'); this.runtime.retryAt = 0; this.runtime.schedule(0); return this.state(); }
     if (input.action === 'workbuddy.sms') {
       try { const workbuddyLogin = await this.workbuddyLogin.send(input.phone); return { ...this.state(), workbuddyLogin }; } catch (e) { bad(e.message); }
     }
@@ -596,6 +599,7 @@ export function managementHandler(manager) {
     res.end(JSON.stringify(value));
   };
   return async (req, res) => {
+    manager.requests = (manager.requests ?? 0) + 1;
     try {
       const remote = req.socket?.remoteAddress;
       if (!hostIsLoopback(req.headers.host) || (remote && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote))) throw new ManagementError(403, '仅允许本机请求');
@@ -614,6 +618,6 @@ export function managementHandler(manager) {
     } catch (error) {
       json(res, error instanceof ManagementError ? error.status : 500,
         { error: error instanceof ManagementError ? error.message : '操作失败，请检查配置和来源文件' });
-    }
+    } finally { manager.requests--; }
   };
 }

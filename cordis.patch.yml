@@ -1,3 +1,3 @@
 - insert:
-    - id: llm-multi-router-v2
-      name: dsh-multi-router
+    - id: llm-multi-router-v2-0.5.7
+      name: ./lib/host-v0.5.7.js

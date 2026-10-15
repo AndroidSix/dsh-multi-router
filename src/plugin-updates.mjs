@@ -96,12 +96,13 @@ async function refreshGitPlugin(service, profile, row, options, signal) {
   }, { waitMs: 120000 });
 }
 export class PluginUpdates {
-  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin, stateFile, now = Date.now } = {}) {
+  constructor({ service = () => undefined, profile = () => undefined, fetchImpl = (...args) => fetch(...args), lookup = registryVersion, refreshGit = refreshGitPlugin, onInstalled, stateFile, now = Date.now } = {}) {
     this.stateFile = stateFile; this.now = now; this.dismissed = {}; this.lastAttempt = 0; this.saveQueue = Promise.resolve();
     this.service = service; this.profile = profile; this.fetchImpl = fetchImpl;
     this.rows = []; this.abort = new AbortController();
     this.lookup = lookup;
     this.refreshGit = refreshGit;
+    this.onInstalled = onInstalled;
   }
   async load() {
     const saved = this.stateFile && await jsonFile(this.stateFile);
@@ -124,6 +125,7 @@ export class PluginUpdates {
     // Revalidate cached notices against the local installed inventory, including
     // removals and updates made through DSH or another plugin manager.
     await this.list();
+    if (this.abort.signal.aborted) return;
     if (this.flight || this.now() >= this.lastAttempt && this.now() - this.lastAttempt < 86400000) return;
     // Reserve before I/O: minute ticks and restarts cannot hammer failed sources.
     this.lastAttempt = this.now(); await this.persist();
@@ -221,7 +223,8 @@ export class PluginUpdates {
       if (githubCommit(lock.preferNpm ? npm ?? pnpm : pnpm ?? npm) !== row.latestCommit) return { name: row.name, status: 'failed', restartRequired: true,
         message: '实际 Git 提交与检查结果不一致，请重新检查后重试；不把仍停留在旧锁文件的安装报告为成功' };
     }
-    return { name: row.name, status: 'installed', application: result.application, message: result.application === 'restart-required' ? '已安装，完全退出并重新打开 DSH 后生效' : '安装完成', restartRequired: result.application === 'restart-required' };
+    const reloadPending = result.application === 'restart-required' && this.onInstalled?.(row.name) === true;
+    return { name: row.name, status: 'installed', application: reloadPending ? 'reload-pending' : result.application, message: reloadPending ? '已安装，等待当前操作结束后自动加载；运行版本见面板顶部' : result.application === 'restart-required' ? '已安装，完全退出并重新打开 DSH 后生效' : '安装完成', restartRequired: !reloadPending && result.application === 'restart-required' };
   }
   update(names, registry) {
     if (!Array.isArray(names) || !names.length || names.length > 200 || names.some(n => typeof n !== 'string') || new Set(names).size !== names.length) throw Error('请选择要更新的插件');
@@ -251,9 +254,10 @@ export class PluginUpdates {
     this.start('install', async job => {
       job.total = 1; job.current = spec;
       const result = await this.service().installBundle(spec, { requestId: job.id, ...(registry ? { registry } : {}) });
+      const reloadPending = !result.error && result.packageResult?.exitCode === 0 && result.application === 'restart-required' && this.onInstalled?.(result.bundle) === true;
       job.results.push({ name: result.bundle ?? spec, status: result.error || ['failed', 'cancelled'].includes(result.application) || result.packageResult && result.packageResult.exitCode !== 0 ? 'failed' : 'installed',
-        message: result.error ? `安装未完成（${result.error.code}），请查看 DSH 插件安装日志` : result.application === 'restart-required' ? '已安装，请完全退出并重启 DSH' : '安装完成',
-        application: result.application, pendingBuilds: result.pendingBuilds ?? [], restartRequired: result.application === 'restart-required' });
+        message: result.error ? `安装未完成（${result.error.code}），请查看 DSH 插件安装日志` : reloadPending ? '已安装，等待当前操作结束后自动加载' : result.application === 'restart-required' ? '已安装，请完全退出并重启 DSH' : '安装完成',
+        application: reloadPending ? 'reload-pending' : result.application, pendingBuilds: result.pendingBuilds ?? [], restartRequired: !reloadPending && result.application === 'restart-required' });
       delete job.current; await this.list();
     });
   }

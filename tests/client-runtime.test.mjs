@@ -15,6 +15,14 @@ test('published host entry is discovered by the real DSH client registry', t => 
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
+test('official DSH lifecycle replaces server and browser module generations without a process restart', t => {
+  const electron = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness';
+  if (!existsSync(electron)) { t.skip('Installed DSH desktop runtime is required'); return; }
+  const result = spawnSync(electron, ['--expose-internals', fileURLToPath(new URL('../scripts/check-live-reload.mjs', import.meta.url))],
+    { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test('client bundle loads in the real DSH classic-script module loader and registers its settings slot', async () => {
   const require = createRequire(import.meta.url);
   let module, registered;
@@ -34,11 +42,15 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   assert.equal(module.backendNeedsRestart({ pluginVersion: JSON.parse(await readFile(new URL('../package.json', import.meta.url))).version }), false);
   const html = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.RestartGuidance, { data: { pluginVersion: '0.3.7' } }));
   assert.match(html, /退出 DeepSeek Harness/);
-  assert.match(html, /关闭窗口或刷新面板不会重新加载后台/);
-  assert.match(html, /我已重启，重新检查/);
+  assert.match(html, /重新加载插件/);
+  assert.match(html, /重新连接/);
+  await module.requestPluginReload({ pluginManager: { setBundleEnabled: async (name, enabled) => { assert.equal(name, 'dsh-multi-router'); assert.equal(enabled, true); return { ok: true, value: { application: 'applied' } }; } } });
+  await assert.rejects(module.requestPluginReload({ pluginManager: { setBundleEnabled: async () => ({ ok: true, value: { application: 'restart-required' } }) } }), /未能即时重载/);
   const welcome = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.InitialSetup, { data: { providers: [{ id: 'trae', name: 'Trae CN' }], localDiscovery: [{ provider: 'trae', state: 'found', savedCount: 1 }] } }));
   assert.match(welcome, /已保存 1 个/);
   assert.match(welcome, /一键获取并保存 WorkBuddy/);
+  const discovering = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.InitialSetup, { data: { startup: { phase: 'discovering' }, localDiscovery: [], providers: [] } }));
+  assert.match(discovering, /进行中/); assert.ok(!discovering.includes('暂未保存本机登录'));
   const updates = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.PluginUpdatesPanel, { data: { available: true, rows: [{ name: 'other-plugin', version: '1.0.0', enabled: false, source: { kind: 'npm', tag: 'latest' }, status: 'available', latestVersion: '1.1.0' }, { name: '@deepseek-ai/dsh-base', source: { kind: 'builtin' }, status: 'builtin' }] } }));
   assert.match(updates, /other-plugin/); assert.match(updates, /停用/); assert.match(updates, /检查全部更新/);
   assert.ok(!updates.includes('@deepseek-ai/dsh-base')); assert.ok(!updates.includes('DSH 内置组件'));

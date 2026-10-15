@@ -3,18 +3,24 @@ import { version as pluginVersion } from '../package.json';
 export const name = 'dsh-multi-router-client';
 export const inject = ['slots'];
 const ENDPOINT = '/.well-known/dsh-multi-router';
+let reloadFromHost;
+export async function requestPluginReload(remote) {
+  if (!remote?.pluginManager?.setBundleEnabled) throw Error('当前 DSH 未提供重新加载接口，请升级 DSH 或在插件页关闭后重新启用本插件。');
+  const answer = await remote.pluginManager.setBundleEnabled('dsh-multi-router', true);
+  const result = answer?.ok === true ? answer.value : answer;
+  if (answer?.ok === false || result?.application !== 'applied') throw Error('DSH 未能即时重载，请检查组件错误；不支持热加载的旧版 DSH 仍需重启。');
+}
 export const backendNeedsRestart = data => !!data && data.pluginVersion !== pluginVersion;
-export function RestartGuidance({ data, retry }) {
-  return <section className="box stack" role="alert"><h3>需要重新启动 DeepSeek Harness</h3>
-    <p>{data ? `面板版本 ${pluginVersion}，后台版本 ${data.pluginVersion || '旧版'}。更新后的后台尚未重新加载。` : '插件后台尚未启动。若刚安装或更新插件，请完成下面的重启步骤。'}</p>
-    <p>macOS：顶部菜单「DeepSeek Harness → 退出 DeepSeek Harness」（⌘Q），再重新打开应用。<br />Windows：退出托盘中的 DeepSeek Harness，再重新打开。<br />网页版：重启运行 DSH 的服务进程。</p>
-    <p className="notice">关闭窗口或刷新面板不会重新加载后台。重启后会保留账号、路由和用量；如仍提示异常，请查看下方组件的启用错误。</p>
-    <div><button onClick={retry}>我已重启，重新检查</button></div></section>;
+export function RestartGuidance({ data, retry, reload, busy }) {
+  return <section className="box stack" role="alert"><h3>插件正在连接或同步版本</h3>
+    <p>{data ? `面板 v${pluginVersion}，运行中的后台 v${data.pluginVersion || '旧版'}。正在等待 DSH 同步新版本。` : '暂时无法连接插件后台。安装或更新后会自动重试，也可以只重新加载本插件。'}</p>
+    <div className="row"><button disabled={busy} onClick={reload}>重新加载插件</button><button disabled={busy} onClick={retry}>重新连接</button></div>
+    <details><summary>仍无法连接？</summary><p className="notice">先检查下方组件的启用错误。旧版 DSH 若不支持运行中重载，可升级 DSH，或通过「退出 DeepSeek Harness」完全退出后重新打开。关闭窗口不等于退出，账号、路由与用量会保留。</p></details></section>;
 }
 export async function readManagementResponse(res) {
   let next;
   try { next = JSON.parse(await res.text()); } catch {
-    throw Error(`插件后台未就绪（HTTP ${res.status}）。请检查插件组件的启用错误，更新插件后完全退出并重启 DSH。`);
+    throw Error(`插件后台未就绪（HTTP ${res.status}）。正在重新连接；若持续失败，请重新加载插件并检查组件错误。`);
   }
   if (!next || typeof next !== 'object' || Array.isArray(next)) throw Error('插件后台返回了无效数据，请刷新面板或重启 DSH。');
   if (!res.ok) throw Error(next.error || `操作失败（HTTP ${res.status}）`);
@@ -47,7 +53,7 @@ const styles = `
 
 @media(prefers-reduced-motion:reduce){.mr *{transition:none!important}}
 `;
-export function apply(ctx) { ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-multi-router' }, RouterPage)); ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', key: 'dsh-multi-router-updates' }, UpdateReminder)); }
+export function apply(ctx) { reloadFromHost = () => requestPluginReload(ctx.get?.('remote')); ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-multi-router' }, RouterPage)); ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', key: 'dsh-multi-router-updates' }, UpdateReminder)); }
 function Modal({ title, close, children, busy }) {
   const ref = useRef(null);
   useEffect(() => { const dialog = ref.current; dialog.showModal(); return () => dialog.close(); }, []);
@@ -83,20 +89,25 @@ export function RouterPage({ view = 'page' }) {
   const [accountProvider, setAccountProvider] = useState(''), [provider, setProvider] = useState('workbuddy'), [busy, setBusy] = useState(false), [live, setLive] = useState(true);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [draft, setDraft] = useState(null), [accountModal, setAccountModal] = useState(null), [presetModal, setPresetModal] = useState(false), [search, setSearch] = useState('');
   const polling = useRef(false);
-  async function load() { const next = await readManagementResponse(await fetch(ENDPOINT, { cache: 'no-store' })); setData(next); setError(''); }
+  async function load(signal = AbortSignal.timeout(8000)) { const next = await readManagementResponse(await fetch(ENDPOINT, { cache: 'no-store', signal })); setData(next); setError(''); }
   useEffect(() => {
-    const accountProviderSelect = <label className="filter">供应商 / 区域<select value={accountProvider} onChange={e => setAccountProvider(e.target.value)}><option value="">全部供应商</option>{data?.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>;
-  if (view === 'summary') return;
-    void load().catch(e => setError(e.message));
-    if (!live) return;
-    const timer = setInterval(() => { if (document.hidden || polling.current) return; polling.current = true; void load().catch(e => setError(e.message)).finally(() => { polling.current = false; }); }, 15000);
-    return () => clearInterval(timer);
+    if (view === 'summary') return;
+    let stopped = false, retry, attempts = 0;
+    const abort = new AbortController();
+    async function connect() {
+      try { await load(AbortSignal.any([abort.signal, AbortSignal.timeout(4000)])); }
+      catch (e) { if (stopped) return; if (++attempts < 8) retry = setTimeout(connect, 750); else setError(e.message); }
+    }
+    void connect();
+    const timer = live && setInterval(() => { if (document.hidden || polling.current) return; polling.current = true; void load(abort.signal).catch(e => { if (!stopped) setError(e.message); }).finally(() => { polling.current = false; }); }, 15000);
+    return () => { stopped = true; abort.abort(); clearTimeout(retry); clearInterval(timer); };
   }, [view, live]);
   useEffect(() => {
-    if (data?.pluginUpdates?.job?.state !== 'running' && !data?.checkins?.running) return;
+    if (data?.startup?.phase !== 'discovering' && !['waiting', 'reloading'].includes(data?.runtime?.phase) && data?.pluginUpdates?.job?.state !== 'running' && !data?.checkins?.running) return;
     const timer = setInterval(() => { if (polling.current) return; polling.current = true; void load().catch(e => setError(e.message)).finally(() => { polling.current = false; }); }, 2000);
     return () => clearInterval(timer);
-  }, [data?.pluginUpdates?.job?.state, data?.checkins?.running]);
+  }, [data?.startup?.phase, data?.runtime?.phase, data?.pluginUpdates?.job?.state, data?.checkins?.running]);
+  async function reload() { setBusy(true); setError(''); try { if (!reloadFromHost) throw Error('请在 DSH 插件页重新启用本插件。'); await reloadFromHost(); await load(); } catch (e) { setError(e.message); } finally { setBusy(false); } }
   async function act(action) {
     if (busy || backendNeedsRestart(data)) return false;
     setBusy(true); setError(''); setNotice('');
@@ -111,11 +122,13 @@ export function RouterPage({ view = 'page' }) {
   const providerSelect = <label className="filter">供应商 / 区域<select value={provider} onChange={e => { setProvider(e.target.value); setSearch(''); }}>{data?.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>;
   const accountProviderSelect = <label className="filter">供应商 / 区域<select value={accountProvider} onChange={e => setAccountProvider(e.target.value)}><option value="">全部供应商</option>{data?.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>;
   if (view === 'summary') return '三家账号与登录信息、用量监控、模型管理，以及权重和额度路由。';
-  return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>账号与路由</h2><p className="muted">管理三家账号、模型与用量</p></div><div className="row"><span className="status"><i className={busy ? 'warn' : 'good'} aria-hidden="true" />{busy ? '正在处理…' : '本机运行'}</span><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
+  return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>账号与路由</h2><p className="muted">管理三家账号、模型与用量</p></div><div className="row"><span className="badge">v{data?.pluginVersion ?? pluginVersion}</span><span className="status"><i className={busy || !data ? 'warn' : 'good'} aria-hidden="true" />{busy ? '正在处理…' : !data ? '正在连接…' : '本机运行'}</span><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
     <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['checkins', '积分签到'], ['models', '模型管理'], ['routes', '路由规则'], ['plugins', '插件更新'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
     {!draft && !accountModal && !presetModal && <Feedback error={error} notice={notice} />}
-    {(backendNeedsRestart(data) || (!data && error)) && <RestartGuidance data={data} retry={() => { void load().catch(e => setError(e.message)); }} />}
-    {!data ? <p role="status">{error ? '插件后台暂不可用。修复启用错误后点击「刷新面板」。' : '正在读取账号与用量…'}</p> : <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} disabled={backendNeedsRestart(data)} aria-busy={busy}>
+    {(backendNeedsRestart(data) || (!data && error)) && <RestartGuidance data={data} busy={busy} reload={() => { void reload(); }} retry={() => { void load().catch(e => setError(e.message)); }} />}
+    {!data ? <section className="box stack" role="status" aria-live="polite"><h3>{error ? '等待后台连接' : '正在连接本机插件…'}</h3><p className="notice">页面会自动重新连接。账号发现、用量和模型目录将在后台更新。</p><progress aria-label="正在连接插件后台" /></section> : <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} disabled={backendNeedsRestart(data)} aria-busy={busy}>
+      {data.startup?.phase === 'discovering' && <p className="steps" role="status">正在后台获取本机账号，已有账号和路由现在即可使用。</p>}
+      {data.runtime?.phase && data.runtime.phase !== 'current' && <section className="steps"><p>{data.runtime.message}（运行 v{data.runtime.runningVersion} / 已安装 v{data.runtime.installedVersion}）</p>{['failed', 'restart-required'].includes(data.runtime.phase) && <button disabled={busy} onClick={() => { void reload(); }}>重新加载插件</button>}</section>}
       {['overview', 'accounts'].includes(tab) && data.setup?.dismissed !== true && <InitialSetup data={data} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'overview' && <Overview data={data} live={live} setLive={setLive} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'plugins' && <PluginUpdatesPanel data={data.pluginUpdates} busy={busy} act={act} />}
@@ -428,10 +441,11 @@ function RouteForm({ draft, setDraft, data, act, busy, error, notice }) {
 
 export function InitialSetup({ data, busy, act, go }) {
   const discovery = data.localDiscovery ?? [];
+  const discovering = data.startup?.phase === 'discovering';
   const saved = discovery.reduce((n, s) => n + (s.savedCount ?? 0), 0);
-  return <section className="box stack" aria-label="首次账号设置"><div className="bar"><div><h3>本机账号自动获取{discovery.length ? '已完成' : '待重试'}</h3><p className="notice">{saved ? `已保存 ${saved} 个 WorkBuddy / Trae 本机登录，无需再次手动添加。` : '暂未保存本机登录。先在官方客户端登录，再点击「一键获取并保存」。'}</p></div><button disabled={busy} onClick={() => { void act({ action: 'setup.dismiss' }); }}>知道了</button></div>
+  return <section className="box stack" aria-label="首次账号设置"><div className="bar"><div><h3>本机账号自动获取{discovering ? '进行中' : discovery.length ? '已完成' : '待重试'}</h3><p className="notice">{discovering ? '正在后台读取 WorkBuddy / Trae 本机登录，无需手动重复获取，已有账号可以继续使用。' : saved ? `已保存 ${saved} 个 WorkBuddy / Trae 本机登录，无需再次手动添加。` : '暂未保存本机登录。先在官方客户端登录，再点击「一键获取并保存」。'}</p></div><button disabled={busy} onClick={() => { void act({ action: 'setup.dismiss' }); }}>知道了</button></div>
     <div className="providers">{discovery.map(s => <div className="steps" key={s.provider}><strong>{data.providers.find(p => p.id === s.provider)?.name ?? s.provider}</strong><p className={(s.savedCount ?? 0) > 0 ? 'good' : 'notice'}>{s.savedCount ? `已保存 ${s.savedCount} 个登录` : s.state === 'found' ? '检测到登录；已忽略或尚未保存，请重新获取' : s.state === 'unreadable' ? '登录文件无法读取，请在客户端重新登录后重试' : '未检测到登录，请先登录官方客户端'}</p></div>)}</div>
-    <div className="row"><button className="primary" disabled={busy} onClick={() => { void act({ action: 'accounts.discover' }); }}>一键获取并保存 WorkBuddy / Trae</button><button disabled={busy} onClick={() => go('accounts')}>查看账号 / 手动添加</button><button disabled={busy} onClick={() => go('routes')}>选择路由模型</button></div><p className="notice">首次启动自动执行一次，之后每分钟检测新增登录。Qoder 使用 PAT，请到「账号与登录」添加；未安装客户端也可以手动填写凭证。</p>
+    <div className="row"><button className="primary" disabled={busy || discovering} onClick={() => { void act({ action: 'accounts.discover' }); }}>一键获取并保存 WorkBuddy / Trae</button><button disabled={busy} onClick={() => go('accounts')}>查看账号 / 手动添加</button><button disabled={busy} onClick={() => go('routes')}>选择路由模型</button></div><p className="notice">首次启动自动执行一次，之后每分钟检测新增登录。Qoder 使用 PAT，请到「账号与登录」添加；未安装客户端也可以手动填写凭证。</p>
   </section>;
 }
 const updateNames = { unchecked: '待检查', available: '可更新', current: '已同步', pinned: '固定提交', unsupported: '本地来源', failed: '检查 / 安装失败', installed: '已安装' };
