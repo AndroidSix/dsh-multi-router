@@ -9,7 +9,7 @@ const derive = promisify(scrypt);
 const FORMAT = 'dsh-multi-router';
 const MAX_BYTES = 512 * 1024;
 const pick = (value, keys) => Object.fromEntries(keys.filter(k => Object.hasOwn(value ?? {}, k)).map(k => [k, value[k]]));
-const options = ['cooldownMs', 'requestTimeoutMs', 'catalogTtlMs', 'retryServerErrors', 'modelVisibility', 'usageRetentionDays', 'checkinSchedule'];
+const options = ['cooldownMs', 'requestTimeoutMs', 'catalogTtlMs', 'retryServerErrors', 'modelVisibility', 'usageRetentionDays', 'checkinSchedule', 'sidebarUsage'];
 function settings(config) {
   return { ...pick(config, options), models: Object.fromEntries(Object.entries(config.models ?? {}).map(([p, rows]) => [p, Object.fromEntries(Object.entries(rows).map(([id, pref]) => [id, pick(pref, ['name', 'visible'])]))])),
     accounts: config.accounts.map(a => pick(a, ['id', 'provider', 'name', 'enabled', 'autoCheckin'])),

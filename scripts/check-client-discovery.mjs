@@ -34,6 +34,7 @@ const slots = new SlotCore();
 const releaseRoot = slots.register({ name: 'root', children: {
   'plugins.bundle.config': { kind: 'keyed', scope: 'root' },
   'shell.overlay': { kind: 'list', scope: 'root' },
+  'sidebar.footer.action': { kind: 'list', scope: 'root' },
 } }, () => null);
 let client;
 const require = createRequire(new URL('../package.json', import.meta.url));
@@ -44,8 +45,10 @@ const contributions = [];
 client.apply({ slots: { inject(_name, setup) { contributions.push(setup()); }, register: (options, component) => slots.register(options, component) } });
 assert.equal(slots.entries('plugins.bundle.config').length, 1);
 assert.equal(slots.entries('shell.overlay').length, 1);
+assert.equal(slots.entries('sidebar.footer.action').length, 1);
 for (const dispose of contributions.reverse()) dispose();
 assert.equal(slots.entries('plugins.bundle.config').length, 0);
 assert.equal(slots.entries('shell.overlay').length, 0);
+assert.equal(slots.entries('sidebar.footer.action').length, 0);
 releaseRoot();
 console.log('PASS: real DSH keyed settings and list overlay register and dispose together');

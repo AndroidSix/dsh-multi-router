@@ -2,7 +2,7 @@ import { build } from 'esbuild';
 import { chmod, rm, copyFile, readFile, writeFile } from 'node:fs/promises';
 const { version } = JSON.parse(await readFile('package.json', 'utf8'));
 await rm('lib', { recursive: true, force: true });
-await build({ entryPoints: { index: 'src/index.mjs', cli: 'src/cli.mjs', clients: 'src/clients.mjs', accounts: 'src/accounts.mjs', shim: 'src/shim.mjs', router: 'src/router.mjs', manager: 'src/manager.mjs' },
+await build({ entryPoints: { index: 'src/index.mjs', cli: 'src/cli.mjs', clients: 'src/clients.mjs', accounts: 'src/accounts.mjs', shim: 'src/shim.mjs', router: 'src/router.mjs', manager: 'src/manager.mjs', 'api-service': 'src/api-service.mjs' },
   outdir: 'lib', bundle: true, splitting: true, platform: 'node', format: 'esm', target: 'node22', packages: 'external',
   sourcemap: true, legalComments: 'eof' });
 await chmod('lib/cli.js', 0o755);

@@ -265,6 +265,32 @@ test('all three providers import independent private snapshots; account order an
   await act({ action: 'account.remove', id: 'wb' }); assert.equal(manager.config.accounts.length, 5);
 });
 
+test('sidebar summary defaults on, persists its toggle and returns only cached aggregate counters', async t => {
+  const { manager, act, file } = await setup(t);
+  const now = Date.parse('2026-10-15T00:05:00+08:00'); manager.telemetry.now = () => now;
+  await manager.telemetry.record({ account: 'wb1', alias: 'custom', provider: 'workbuddy', ok: true, status: 200, usage: { prompt_tokens: 100, completion_tokens: 20 } });
+  manager.telemetry.data.days['2026-10-14'] = { tokens: 999, requests: 3 };
+  assert.deepEqual(manager.summaryState(), { pluginVersion: manager.state().pluginVersion, enabled: true, today: '2026-10-15', tokens: 120, requests: 1, unmetered: 0, totalTokens: 120 });
+  const server = createServer(managementHandler(manager, { summaryOnly: true }));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const response = await fetch(url); assert.equal(response.headers.get('cache-control'), 'no-store');
+  const summary = await response.json(); assert.deepEqual(summary, manager.summaryState());
+  assert.doesNotMatch(JSON.stringify(summary), /wb1|accounts|credential|key|events|balance/);
+  assert.equal((await fetch(url, { method: 'POST' })).status, 405);
+  assert.equal((await fetch(url, { headers: { Origin: 'https://attacker.example' } })).status, 403);
+  const ids = manager.config.accounts.map(a => a.id);
+  await act({ action: 'options.save', sidebarUsage: false });
+  assert.equal(manager.summaryState().enabled, false); assert.equal(manager.state().options.sidebarUsage, false);
+  assert.equal(JSON.parse(await readFile(file)).sidebarUsage, false);
+  assert.equal((await act({ action: 'config.export' })).exported.document.config.sidebarUsage, false);
+  await manager.load(); assert.equal(manager.summaryState().enabled, false);
+  assert.deepEqual(manager.config.accounts.map(a => a.id), ids);
+  await assert.rejects(act({ action: 'options.save', sidebarUsage: 'false' }), /布尔值/);
+  await act({ action: 'options.save', sidebarUsage: true }); assert.equal(manager.summaryState().enabled, true);
+});
+
 test('management HTTP protects actions, rejects rebinding and never returns credentials in ordinary state', async t => {
   const { manager } = await setup(t);
   const server = createServer(managementHandler(manager));

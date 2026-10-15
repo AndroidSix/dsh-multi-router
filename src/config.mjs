@@ -108,6 +108,7 @@ export function validateConfig(raw, file = resolve('router.json')) {
   if (!object(modelVisibility) || Object.entries(modelVisibility).some(([provider, visible]) => !PROVIDERS.includes(provider) || typeof visible !== 'boolean')) throw new Error('Invalid modelVisibility');
   for (const key of ['cooldownMs', 'requestTimeoutMs', 'catalogTtlMs']) if (raw[key] !== undefined && !positive(raw[key])) throw new Error(`Invalid ${key}`);
   if (raw.retryServerErrors !== undefined && typeof raw.retryServerErrors !== 'boolean') throw new Error('Invalid retryServerErrors');
+  if (raw.sidebarUsage !== undefined && typeof raw.sidebarUsage !== 'boolean') throw new Error('侧栏用量开关必须是布尔值');
   if (raw.ignoredLocalAccounts !== undefined && (!Array.isArray(raw.ignoredLocalAccounts) || raw.ignoredLocalAccounts.some(k => typeof k !== 'string' || k.length > 1024))) throw new Error('Invalid ignoredLocalAccounts');
   if (raw.usageRetentionDays !== undefined && (!positive(raw.usageRetentionDays) || raw.usageRetentionDays > 365)) throw new Error('Token 明细保留天数必须为 1–365 的整数');
   const checkinSchedule = raw.checkinSchedule ?? { mode: 'scheduled', time: '10:05' };
@@ -115,7 +116,7 @@ export function validateConfig(raw, file = resolve('router.json')) {
     || !/^([01]\d|2[0-3]):[0-5]\d$/.test(checkinSchedule.time ?? '')
     || Object.keys(checkinSchedule).some(k => !['mode', 'time'].includes(k))) throw new Error('签到计划必须选择启动或定时，并填写有效的北京时间（HH:mm）');
   return { ...raw, accounts, routes, models, modelVisibility, cooldownMs: raw.cooldownMs ?? 60000,
-    checkinSchedule: { ...checkinSchedule },
+    checkinSchedule: { ...checkinSchedule }, sidebarUsage: raw.sidebarUsage ?? true,
     requestTimeoutMs: raw.requestTimeoutMs ?? 300000, catalogTtlMs: raw.catalogTtlMs ?? 300000,
     retryServerErrors: raw.retryServerErrors ?? false, usageRetentionDays: raw.usageRetentionDays ?? 30 };
 }

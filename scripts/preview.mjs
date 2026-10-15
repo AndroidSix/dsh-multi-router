@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { Router } from '../lib/router.js';
-import { Manager, managementHandler, MANAGEMENT_PATH } from '../lib/manager.js';
+import { Manager, managementHandler, MANAGEMENT_PATH, SUMMARY_PATH } from '../lib/manager.js';
 import { validateConfig, writePrivateJson, DEFAULT_ROUTES, beijingDay } from '../src/config.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -68,15 +68,16 @@ await manager.checkFreeModels(true);
 if (process.env.DSH_PREVIEW_UPDATES === '1') { manager.plugins.check(); await manager.plugins.flight; }
 
 
-const api = managementHandler(manager);
+const api = managementHandler(manager), summary = managementHandler(manager, { summaryOnly: true });
 let startupAt = 0;
 const result = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
-import {RouterPage,UpdateReminder} from './src/client.jsx'; ${previewNow ? `Date.now = () => ${previewNow};` : ''} createRoot(document.getElementById('app')).render(React.createElement(React.Fragment,null,React.createElement(RouterPage),${process.env.DSH_PREVIEW_UPDATES === '1' ? 'React.createElement(UpdateReminder)' : 'null'}));`,
+import {RouterPage,UpdateReminder,SidebarUsage} from './src/client.jsx'; ${previewNow ? `Date.now = () => ${previewNow};` : ''} if (new URLSearchParams(location.search).has('sidebar')) { const sidebar = document.createElement('aside'); sidebar.className = 'preview-sidebar'; document.body.append(sidebar); createRoot(sidebar).render(React.createElement(SidebarUsage,{open:()=>{document.getElementById('app').scrollIntoView();document.getElementById('app').setAttribute('data-opened','true');}})); } createRoot(document.getElementById('app')).render(React.createElement(React.Fragment,null,React.createElement(RouterPage),${process.env.DSH_PREVIEW_UPDATES === '1' ? 'React.createElement(UpdateReminder)' : 'null'}));`,
   resolveDir: process.cwd(), loader: 'jsx' }, bundle: true, platform: 'browser', format: 'esm', write: false, jsx: 'automatic' });
 const script = result.outputFiles[0].text;
 const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DSH Multi Router · 设置预览</title>
-<style>:root{--dsw-alias-label-primary:#ececf0;--dsw-alias-label-secondary:#b7b7c1;--dsw-alias-border-l2:#35353c;--dsw-alias-bg-layer-1:#202024;--dsw-alias-bg-module-platform:#18181c;--dsw-alias-state-active-primary:#3d73dc}body{margin:0;padding:32px;background:#111114;font:14px system-ui;color:#ececf0}#app{max-width:1040px;margin:auto}@media(max-width:700px){body{padding:16px}}</style><p style="color:#b7b7c1;text-align:center">演示数据 · 账号已脱敏 · 无真实请求或领取${previewNow ? ' · 模拟北京时间 12:00' : ''}</p><div id="app"></div><script type="module" src="/app.js"></script></html>`;
+<style>.preview-sidebar{position:fixed;left:12px;bottom:56px;width:240px}body:has(.preview-sidebar){padding-left:280px}@media(max-width:700px){body:has(.preview-sidebar){padding-left:16px;padding-bottom:130px}}:root{--dsw-alias-label-primary:#ececf0;--dsw-alias-label-secondary:#b7b7c1;--dsw-alias-border-l2:#35353c;--dsw-alias-bg-layer-1:#202024;--dsw-alias-bg-module-platform:#18181c;--dsw-alias-state-active-primary:#3d73dc}body{margin:0;padding:32px;background:#111114;font:14px system-ui;color:#ececf0}#app{max-width:1040px;margin:auto}@media(max-width:700px){body{padding:16px}}</style><p style="color:#b7b7c1;text-align:center">演示数据 · 账号已脱敏 · 无真实请求或领取${previewNow ? ' · 模拟北京时间 12:00' : ''}</p><div id="app"></div><script type="module" src="/app.js"></script></html>`;
 const server = createServer((req, res) => {
+  if (req.url === SUMMARY_PATH) { void summary(req, res); return; }
   if (req.url === MANAGEMENT_PATH) {
     if (process.env.DSH_PREVIEW_STARTUP === '1') startupAt ||= Date.now();
     if (startupAt && Date.now() - startupAt < 5000 && req.method === 'GET') { res.writeHead(404); res.end(); return; }

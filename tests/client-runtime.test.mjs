@@ -25,7 +25,7 @@ test('official DSH lifecycle replaces server and browser module generations with
 
 test('client bundle loads in the real DSH classic-script module loader and registers its settings slot', async () => {
   const require = createRequire(import.meta.url);
-  let module, registered;
+  let module; const registered = [];
   runInNewContext(await readFile(new URL('../lib/client.js', import.meta.url), 'utf8'), {
     Response,
     window: { __ModuleLoader__: { load({ id, factory }) {
@@ -102,10 +102,18 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   const perf = module.performanceSummary([{ outcome: 'completed', timingSource: 'dsh-step', timing: { modelMs: 10000, ttftMs: 1000, toolMs: 3000, decodeTokens: 100, decodeMs: 2000 } }, { outcome: 'completed', timing: { modelMs: 30000, ttftMs: 3000, decodeTokens: 300, decodeMs: 10000 } }, { outcome: 'failed', timing: { modelMs: 999999 } }, { outcome: 'completed' }]);
   assert.equal(perf.modelMs, 40000); assert.equal(perf.ttftMs, 2000); assert.equal(perf.toolMs, 3000); assert.equal(perf.tps, 400 / 12); assert.equal(module.performanceSummary([]).toolMs, null);
   for (const label of ['模型用时', '工具调用用时', 'TTFT', 'TPS', '未经过 DSH 步骤']) assert.ok(usage.includes(label));
-  module.apply({ slots: { inject(name, fn) { assert.ok(['plugins.bundle.config', 'shell.overlay'].includes(name)); fn(); },
-    register(options, component) { registered = { options, component }; } } });
-  assert.equal(registered.options.id, 'dsh-multi-router-updates');
-  assert.equal(registered.component, module.UpdateReminder);
+  let openedBundle; module.apply({ get: name => { assert.equal(name, 'pluginNavigation'); return { openBundle: name => { openedBundle = name; } }; }, slots: { inject(name, fn) { assert.ok(['plugins.bundle.config', 'shell.overlay', 'sidebar.footer.action'].includes(name)); fn(); },
+    register(options, component) { registered.push({ options, component }); } } });
+  assert.equal(registered[1].options.id, 'dsh-multi-router-updates');
+  assert.equal(registered[1].component, module.UpdateReminder);
+  assert.equal(registered[2].options.name, 'sidebar.footer.action');
+  assert.equal(registered[2].component, module.SidebarUsage);
+  registered[2].options.inject().open(); assert.equal(openedBundle, 'dsh-multi-router');
+  const summary = { today: '2026-10-15', tokens: 1234, totalTokens: 17255285, requests: 3, unmetered: 1 };
+  const card = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.SidebarUsageCard, { data: summary }));
+  assert.match(card, /1.2K/); assert.match(card, /17.3M/); assert.match(card, /1,234/); assert.match(card, /未返回用量/); assert.match(card, /打开插件详情/);
+  const rail = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.SidebarUsageCard, { data: summary, wide: false }));
+  assert.ok(!rail.includes('<strong>')); assert.match(rail, /data-wide="false"/);
   await assert.rejects(module.readManagementResponse(new Response('', { status: 404 })), /插件后台未就绪（HTTP 404）/);
   await assert.rejects(module.readManagementResponse(new Response('<html>Not found</html>', { status: 503 })), /插件后台未就绪（HTTP 503）/);
   await assert.rejects(module.readManagementResponse(Response.json({ error: '配置冲突' }, { status: 409 })), /配置冲突/);

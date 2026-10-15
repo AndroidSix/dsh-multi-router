@@ -59,7 +59,52 @@ const styles = `
 
 @media(prefers-reduced-motion:reduce){.mr *{transition:none!important}}
 `;
-export function apply(ctx) { reloadFromHost = () => requestPluginReload(ctx.get?.('remote')); ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-multi-router' }, RouterPage)); ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'dsh-multi-router-updates' }, UpdateReminder)); }
+export function apply(ctx) {
+  reloadFromHost = () => requestPluginReload(ctx.get?.('remote'));
+  ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-multi-router' }, RouterPage));
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'dsh-multi-router-updates' }, UpdateReminder));
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'dsh-multi-router-usage', order: 10,
+    inject: () => ({ open: () => {
+      const navigation = ctx.get?.('pluginNavigation');
+      if (!navigation?.openBundle) throw Error('请在插件页打开 dsh-multi-router；当前 DSH 未提供详情导航。');
+      navigation.openBundle('dsh-multi-router');
+    } }) }, SidebarUsage));
+}
+const SUMMARY_EVENT = 'dsh-multi-router-summary';
+const compactTokens = n => n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : fmt(n);
+export function SidebarUsageCard({ data, wide = true, open, error }) {
+  const title = `${data.today}（北京时间）\n今日 ${fmt(data.tokens)} Token · ${fmt(data.requests)} 次请求\n累计 ${fmt(data.totalTokens)} Token${data.unmetered ? `\n${fmt(data.unmetered)} 次调用未返回用量` : ''}${error ? `\n${error}` : ''}\n点击打开账号与路由`;
+  return <><style>{`
+    [class*="_footArea"] [class*="_footerActions"]:has(.mr-sidebar-usage){flex-direction:column}
+    .mr-sidebar-usage{box-sizing:border-box;display:flex;align-items:center;gap:10px;width:100%;min-width:0;min-height:48px;padding:7px 10px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;text-align:left;cursor:pointer}
+    .mr-sidebar-usage:hover{background:var(--dsw-alias-bg-module-platform,#303036)}.mr-sidebar-usage:focus-visible{outline:2px solid var(--dsw-alias-state-active-primary,#3a71db);outline-offset:2px}
+    .mr-sidebar-usage svg{flex-shrink:0}.mr-sidebar-usage span{flex:1;min-width:0}.mr-sidebar-usage small{display:block;color:var(--dsw-alias-label-secondary,#aaa);font-size:10px;line-height:15px;white-space:nowrap}.mr-sidebar-usage strong{display:block;font-size:13px;font-weight:600;line-height:18px;font-variant-numeric:tabular-nums;white-space:nowrap}.mr-sidebar-usage[data-wide=false]{width:36px;min-height:36px;padding:8px;justify-content:center}
+  `}</style><button className="mr-sidebar-usage" data-wide={wide} title={title} aria-label={`Token 用量概览，今日 ${fmt(data.tokens)}，累计 ${fmt(data.totalTokens)}，打开插件详情`} onClick={open}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M4 4v16h17M8 16v-5m5 5V7m5 9v-7" /></svg>
+    {wide && <><span><small>今日 Token{error ? ' · 未刷新' : ''}</small><strong>{compactTokens(data.tokens)}</strong></span><span><small>累计 Token</small><strong>{compactTokens(data.totalTokens)}</strong></span></>}
+  </button></>;
+}
+export function SidebarUsage({ wide = true, open }) {
+  const [data, setData] = useState(null), [error, setError] = useState('');
+  useEffect(() => {
+    let stopped = false, pending = false, again = false;
+    const abort = new AbortController();
+    async function poll(event) {
+      if (document.hidden) return;
+      if (pending) { if (event?.type === SUMMARY_EVENT) again = true; return; }
+      pending = true;
+      try {
+        const next = await readManagementResponse(await fetch(`${ENDPOINT}/summary`, { cache: 'no-store', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(8000)]) }));
+        if (!stopped) { setData(next); setError(''); }
+      } catch { if (!stopped) setError('暂时无法刷新本机统计'); } finally { pending = false; if (again && !stopped) { again = false; void poll(); } }
+    }
+    void poll(); const timer = setInterval(() => { void poll(); }, 60000);
+    document.addEventListener('visibilitychange', poll); window.addEventListener(SUMMARY_EVENT, poll);
+    return () => { stopped = true; abort.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', poll); window.removeEventListener(SUMMARY_EVENT, poll); };
+  }, []);
+  if (!data || data.enabled === false) return null;
+  return <SidebarUsageCard data={data} wide={wide} error={error} open={() => { try { open(); } catch (e) { setError(e.message); } }} />;
+}
 function Modal({ title, close, children, busy }) {
   const ref = useRef(null);
   useEffect(() => { const dialog = ref.current; dialog.showModal(); return () => dialog.close(); }, []);
@@ -118,7 +163,7 @@ export function RouterPage({ view = 'page' }) {
     if (busy || backendNeedsRestart(data)) return false;
     setBusy(true); setError(''); setNotice('');
     try { const res = await fetch(ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Multi-Router-Key': data.key }, body: JSON.stringify({ revision: data.revision, ...action }) });
-      const next = await readManagementResponse(res); const { exported, workbuddyLogin, loginResult, ...state } = next; setData(state); setNotice(action.action === 'workbuddy.sms' ? '' : action.action === 'workbuddy.login' ? loginResult?.warning || '登录凭证已保存，自动签到开关保持原设置。' : action.action === 'checkins.verify' ? '登录验证通过，旧的令牌失效提示已解除；未提交签到。' : action.action === 'checkins.settings' ? '签到计划已保存；今日已处理记录保持不变。' : action.action.startsWith('checkins.') || action.action.startsWith('plugins.') || action.action === 'setup.dismiss' ? '' : action.action === 'accounts.discover' || action.action === 'monitor.refresh' ? '已重新检测本机登录并刷新用量；检测结果见下方。' : action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
+      const next = await readManagementResponse(res); const { exported, workbuddyLogin, loginResult, apiKey, ...state } = next; setData(state); if (action.sidebarUsage !== undefined || action.action === 'config.import') window.dispatchEvent(new Event(SUMMARY_EVENT)); setNotice(action.action.startsWith('api.') ? next.apiService?.phase === 'error' ? '配置已保存，但服务尚未启动，请查看下方提示。' : action.action === 'api.key.reveal' ? '' : 'API 设置已保存。' : action.action === 'workbuddy.sms' ? '' : action.action === 'workbuddy.login' ? loginResult?.warning || '登录凭证已保存，自动签到开关保持原设置。' : action.action === 'checkins.verify' ? '登录验证通过，旧的令牌失效提示已解除；未提交签到。' : action.action === 'checkins.settings' ? '签到计划已保存；今日已处理记录保持不变。' : action.action.startsWith('checkins.') || action.action.startsWith('plugins.') || action.action === 'setup.dismiss' ? '' : action.action === 'accounts.discover' || action.action === 'monitor.refresh' ? '已重新检测本机登录并刷新用量；检测结果见下方。' : action.action.includes('refresh') ? '已刷新。无法获取的账号会保留上次数据并标记。' : action.action === 'config.import' ? '配置已导入并生效，原配置已备份；模型和用量正在后台更新。' : action.action.startsWith('config.') || action.action === 'account.export' ? '' : '已保存并生效。'); return next;
     } catch (e) { setError(e.message); return false; } finally { setBusy(false); }
   }
   function openAccount(mode, account) { setError(''); setNotice(''); setAccountModal({ mode, account, revision: data.revision }); }
@@ -128,8 +173,8 @@ export function RouterPage({ view = 'page' }) {
   const providerSelect = <label className="filter">供应商 / 区域<select value={provider} onChange={e => { setProvider(e.target.value); setSearch(''); }}>{data?.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>;
   const accountProviderSelect = <label className="filter">供应商 / 区域<select value={accountProvider} onChange={e => setAccountProvider(e.target.value)}><option value="">全部供应商</option>{data?.providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>;
   if (view === 'summary') return '三家账号与登录信息、用量监控、模型管理，以及权重和额度路由。';
-  return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>账号与路由</h2><p className="muted">管理三家账号、模型与用量</p></div><div className="row"><span className="badge">v{data?.pluginVersion ?? pluginVersion}</span><span className="status"><i className={busy || !data ? 'warn' : 'good'} aria-hidden="true" />{busy ? '正在处理…' : !data ? '正在连接…' : '本机运行'}</span><label className="check refresh-control"><input type="checkbox" checked={live} onChange={e => setLive(e.target.checked)} />每分钟刷新</label><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
-    <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['checkins', '积分签到'], ['models', '模型管理'], ['routes', '路由规则'], ['plugins', '插件更新'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
+  return <div className="mr"><style>{styles}</style><div className="bar"><div><h2>账号与路由</h2><p className="muted">管理三家账号、模型与用量</p></div><div className="row"><span className="badge">v{data?.pluginVersion ?? pluginVersion}</span><label className="check refresh-control"><input type="checkbox" disabled={busy || !data || backendNeedsRestart(data)} checked={data?.options?.sidebarUsage !== false} onChange={e => { void act({ action: 'options.save', sidebarUsage: e.target.checked }); }} />侧栏用量</label><span className="status"><i className={busy || !data ? 'warn' : 'good'} aria-hidden="true" />{busy ? '正在处理…' : !data ? '正在连接…' : '本机运行'}</span><label className="check refresh-control"><input type="checkbox" checked={live} onChange={e => setLive(e.target.checked)} />每分钟刷新</label><button disabled={busy} onClick={() => { void load().catch(e => setError(e.message)); }}>刷新面板</button></div></div>
+    <nav aria-label="路由插件配置页签">{[['overview', '总览与用量'], ['usage', 'Token 明细'], ['accounts', '账号与登录'], ['checkins', '积分签到'], ['models', '模型管理'], ['routes', '路由规则'], ['api', 'API 服务'], ['plugins', '插件更新'], ['migration', '配置迁移']].map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(''); setNotice(''); }}>{label}</button>)}</nav>
     {!draft && !accountModal && !presetModal && <Feedback error={error} notice={notice} />}
     {(backendNeedsRestart(data) || (!data && error)) && <RestartGuidance data={data} busy={busy} reload={() => { void reload(); }} retry={() => { void load().catch(e => setError(e.message)); }} />}
     {!data ? <section className="box stack" role="status" aria-live="polite"><h3>{error ? '等待后台连接' : '正在连接本机插件…'}</h3><p className="notice">页面会自动重新连接。账号发现、用量和模型目录将在后台更新。</p><progress aria-label="正在连接插件后台" /></section> : <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} disabled={backendNeedsRestart(data)} aria-busy={busy}>
@@ -137,6 +182,7 @@ export function RouterPage({ view = 'page' }) {
       {data.runtime?.phase && data.runtime.phase !== 'current' && <section className="steps"><p>{data.runtime.message}（运行 v{data.runtime.runningVersion} / 已安装 v{data.runtime.installedVersion}）</p>{['failed', 'restart-required'].includes(data.runtime.phase) && <button disabled={busy} onClick={() => { void reload(); }}>重新加载插件</button>}</section>}
       {['overview', 'accounts'].includes(tab) && data.setup?.dismissed !== true && <InitialSetup data={data} busy={busy} act={act} go={key => setTab(key)} />}
       {tab === 'overview' && <Overview data={data} busy={busy} act={act} go={key => setTab(key)} />}
+      {tab === 'api' && <ApiServicePanel data={data.apiService} busy={busy} act={act} />}
       {tab === 'plugins' && <PluginUpdatesPanel data={data.pluginUpdates} busy={busy} act={act} />}
       {tab === 'checkins' && <CheckinPanel data={data} busy={busy} act={act} />}
       {tab === 'usage' && <UsageDetails data={data} busy={busy} act={act} />}
@@ -153,6 +199,50 @@ export function RouterPage({ view = 'page' }) {
     {accountModal && <Modal title={accountModal.mode === 'edit' ? '账号登录详情' : accountModal.mode === 'credentials' ? '补充 / 更新账号凭证' : '添加账号与获取登录'} busy={busy} close={() => setAccountModal(null)}><AccountForm modal={accountModal} provider={accountProvider || 'workbuddy'} data={data} busy={busy} act={act} replace={() => openAccount('credentials', accountModal.account)} close={selected => { if (typeof selected === 'string' && accountProvider) setAccountProvider(selected); setAccountModal(null); }} error={error} notice={notice} /></Modal>}
   </div>;
 }
+export function ApiServicePanel({ data: a, busy, act }) {
+  const [key, setKey] = useState(''), [hint, setHint] = useState(''), [confirmKey, setConfirmKey] = useState(null), [models, setModels] = useState(false), [example, setExample] = useState('');
+  const copyField = useRef(null);
+  useEffect(() => { setKey(current => a?.keyHint && current.endsWith(a.keyHint.slice(-4)) ? current : ''); }, [a?.keyHint]);
+  useEffect(() => { if (!key) return; const timer = setTimeout(() => setKey(''), 60000); return () => clearTimeout(timer); }, [key]);
+  if (!a) return <p className="steps">当前后台未提供 API 服务，请更新插件。</p>;
+  const save = fields => act({ action: 'api.settings', apiRevision: a.revision, ...fields });
+  async function keyAction(action) {
+    const result = await act({ action, apiRevision: a.revision });
+    if (result) { setKey(result.apiKey || ''); setConfirmKey(null); }
+  }
+  async function copy(value, fallback = false) {
+    try { await navigator.clipboard.writeText(value); setHint('已复制。'); }
+    catch { setHint('当前环境无法自动复制，请在文本框中全选复制。'); if (fallback) copyField.current?.select(); else setExample(value); }
+  }
+  const model = a.models[0]?.id || '你的路由模型 ID';
+  const command = `curl '${a.baseUrl}/chat/completions' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: '你好' }], stream: true })}'`;
+  return <div className="stack">
+    <section className="box stack"><div className="bar"><div><h3>API 服务</h3><p className="notice">将账号池与统一路由提供给其他工具。随 DSH 运行，默认关闭。</p></div><span className="status" role="status"><i className={a.phase === 'running' ? 'good' : a.phase === 'error' ? 'warn' : ''} aria-hidden="true" />{({ running: '运行中', stopped: '已关闭', starting: '启动中', error: '启动失败' })[a.phase] || a.phase}</span></div>
+      {a.error && <p className="error" role="alert">{a.error}</p>}
+      <div className="bar"><p className="notice">{a.phase === 'running' ? `${a.active} 个处理中请求 · ${a.allowLan ? '本机与网络访问' : '仅本机访问'}` : '开启后即可复制接入地址；关闭会终止正在处理的 API 请求。'}</p><label className="check"><input type="checkbox" checked={a.enabled} disabled={busy || !a.hasKey} onChange={e => { void save({ enabled: e.target.checked }); }} />启用 API 服务</label></div>
+      {!a.hasKey && <p className="steps">先生成 API Key，再启用服务。账号登录凭证不会通过此服务提供。</p>}
+    </section>
+    <div className="metrics">{metric('今日 API 调用', fmt(a.today.calls), `${a.today.attempts} 次上游尝试，含故障切换`)}{metric('今日 API Token', fmt(a.today.tokens), '平台实际返回用量')}{metric('已开放模型', fmt(a.models.length), a.modelIds === null ? '跟随路由展示设置' : '自选模型')}{metric('处理中', fmt(a.active), '最多 8 个并发 API 请求')}</div>
+    <section className="box stack"><div className="bar"><div><h3>接入信息</h3><p className="notice">客户端选择 OpenAI 兼容方式，填写下方 Base URL 与 API Key。</p></div><button disabled={busy} onClick={() => setExample(command)}>调用示例</button></div>
+      <label>Base URL<div className="row"><input className="mono" style={{ flex: 1, minWidth: 180 }} readOnly value={a.baseUrl} onFocus={e => e.currentTarget.select()} /><button onClick={() => { void copy(a.baseUrl); }}>复制地址</button></div></label>
+      {a.allowLan && <div><p className="notice">其他设备可使用以下本机网卡地址（需要网络可达及防火墙放行）：</p>{a.lanUrls.length ? a.lanUrls.map(url => <p className="mono" key={url} style={{ overflowWrap: 'anywhere' }}>{url}</p>) : <p className="notice">暂无可用 IPv4 网卡地址。</p>}</div>}
+      <label>API Key<div className="row"><input ref={copyField} className="mono" style={{ flex: 1, minWidth: 180 }} readOnly autoComplete="off" spellCheck="false" value={key || a.keyHint || '尚未生成'} onFocus={e => e.currentTarget.select()} />{a.hasKey && <><button disabled={busy} onClick={() => { if (key) setKey(''); else void keyAction('api.key.reveal'); }}>{key ? '隐藏' : '显示'}</button><button disabled={busy} onClick={async () => { const result = await act({ action: 'api.key.reveal', apiRevision: a.revision }); if (result?.apiKey) { setKey(result.apiKey); await copy(result.apiKey, true); } }}>复制 Key</button></>}</div></label>
+      <div className="row"><button disabled={busy} onClick={() => { if (a.hasKey) setConfirmKey('create'); else void keyAction('api.key.create'); }}>{a.hasKey ? '重置 API Key' : '生成 API Key'}</button>{a.hasKey && <button disabled={busy} onClick={() => setConfirmKey('revoke')}>撤销 Key 并关闭服务</button>}<p className="notice">Key 仅保存在本机私有文件；显示后 60 秒自动隐藏。</p></div>
+      {hint && <p className="notice" role="status">{hint}</p>}
+    </section>
+    <section className="box stack"><h3>服务设置</h3><form key={a.revision} className="stack" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); void save({ port: Number(f.get('port')), allowLan: f.has('lan') }); }}><div className="row"><label className="filter">监听端口<input type="number" name="port" min="1024" max="65535" required defaultValue={a.port} disabled={busy} /></label><label className="check"><input type="checkbox" name="lan" defaultChecked={a.allowLan} disabled={busy} />允许局域网访问</label><button disabled={busy}>保存设置</button></div><p className="notice">默认监听 127.0.0.1。开启网络访问后监听所有 IPv4 网卡，使用 HTTP，请仅用于可信网络；如需外网访问，请自行配置 HTTPS 与访问限制。修改端口或访问范围会中断当前 API 请求。</p></form></section>
+    <section className="box table-shell"><div className="bar table-footer"><div><h3>开放模型</h3><p className="notice">{a.modelIds === null ? '自动跟随已展示路由，包含动态免费模型。' : '仅开放手动选择的路由。'}</p></div><button disabled={busy} onClick={() => setModels(true)}>选择开放模型</button></div><div className="scroll" role="region" aria-label="API 开放模型" tabIndex="0"><table className="table"><thead><tr><th>模型名称</th><th>调用模型 ID</th></tr></thead><tbody>{a.models.map(m => <tr key={m.id}><td>{m.name}</td><td className="mono" style={{ overflowWrap: 'anywhere' }}>{m.id}</td></tr>)}</tbody></table>{!a.models.length && <p className="empty">暂未开放模型，请展示路由或手动选择。</p>}</div></section>
+    <details><summary>接口与统计说明</summary><p className="notice">支持 GET /v1/models、POST /v1/chat/completions（流式与普通 JSON），沿用路由的推理默认值，可用 reasoning_effort 覆盖。工具调用与图片能力取决于目标模型；外部工具自行执行工具并回传结果。用量记录到 Token 明细的「API 服务」来源，不保存请求内容或 Key；上下文由调用客户端传入。此版本不提供 Responses、Embeddings 或跨站浏览器 CORS 接口。启用状态会保存，DSH 下次启动自动恢复；退出 DSH 后停止。</p></details>
+    {confirmKey && <Modal title={confirmKey === 'create' ? '重置 API Key' : '撤销 API Key'} busy={busy} close={() => setConfirmKey(null)}><div className="modal-body stack"><p>{confirmKey === 'create' ? '旧 Key 将立即失效，其他客户端需要填写新 Key。' : 'Key 将立即失效，API 服务会关闭，正在处理的 API 请求将中断。'}</p></div><div className="modal-foot row"><button disabled={busy} onClick={() => setConfirmKey(null)}>取消</button><button className="primary" disabled={busy} onClick={() => { void keyAction(`api.key.${confirmKey}`); }}>确认{confirmKey === 'create' ? '重置' : '撤销'}</button></div></Modal>}
+    {models && <Modal title="选择 API 开放模型" busy={busy} close={() => setModels(false)}><ApiModels data={a} busy={busy} save={async modelIds => { if (await save({ modelIds })) setModels(false); }} /></Modal>}
+    {example && <Modal title="接入示例 / 手动复制" busy={false} close={() => setExample('')}><div className="modal-body stack"><p className="notice">将 YOUR_API_KEY 替换为自己的服务 Key。Base URL 已包含 /v1；测试调用会正常消耗目标账号的用量。</p><label>可复制内容<textarea className="mono" readOnly rows={8} value={example} onFocus={e => e.currentTarget.select()} /></label></div></Modal>}
+  </div>;
+}
+function ApiModels({ data, busy, save }) {
+  const [follow, setFollow] = useState(data.modelIds === null), [selected, setSelected] = useState(data.modelIds ?? data.models.map(m => m.id));
+  return <form onSubmit={e => { e.preventDefault(); void save(follow ? null : selected); }}><div className="modal-body stack"><label className="check"><input type="checkbox" checked={follow} disabled={busy} onChange={e => setFollow(e.target.checked)} />跟随路由展示（新发现的免费模型也自动开放）</label><div className="row"><button type="button" disabled={busy || follow} onClick={() => setSelected(data.choices.map(m => m.id))}>全选</button><button type="button" disabled={busy || follow} onClick={() => setSelected([])}>全不选</button></div>{data.choices.map(m => <label className="check" key={m.id}><input type="checkbox" disabled={busy || follow} checked={follow ? m.visible : selected.includes(m.id)} onChange={e => setSelected(e.target.checked ? [...selected, m.id] : selected.filter(id => id !== m.id))} /><span>{m.name}<small className="mono muted" style={{ overflowWrap: 'anywhere' }}>{m.id}</small></span></label>)}{!data.choices.length && <p className="notice">请先添加路由。</p>}</div><div className="modal-foot row"><button className="primary" disabled={busy}>保存开放范围</button></div></form>;
+}
+
 export function ModelsPanel({ data, provider, providerSelect, search, setSearch, busy, act }) {
   const [editing, setEditing] = useState(null);
   const models = data.providers.find(p => p.id === provider)?.models ?? [];
@@ -274,11 +364,11 @@ function PerformanceMetrics({ events }) {
     <details className="help"><summary>统计口径与缺失数据</summary><div><p className="notice">随当前时间、账号、路由和结果筛选汇总，从本版开始记录；旧数据不补算。DSH 步骤口径与会话统计一致：模型用时从步骤开始到回复完成，首 Token 包括非空文本、推理或工具调用，工具用时按调用与结果配对相加（并行工具可能重叠）。TPS = 有效输出 Token 合计 ÷ 首 Token 后的解码秒数合计，不对各次速度简单平均。未经过 DSH 步骤的请求使用上游计时，无法记录工具执行用时。这里只汇总本插件保留且筛选内的调用，并非某个会话的完整历史。失败与取消保留逐次耗时，不计入以上成功调用指标。</p></div></details></section>;
 }
 export function UsageDetails({ data, busy, act }) {
-  const [account, setAccount] = useState(''), [route, setRoute] = useState(''), [outcome, setOutcome] = useState(''), [page, setPage] = useState(0);
+  const [account, setAccount] = useState(''), [route, setRoute] = useState(''), [outcome, setOutcome] = useState(''), [source, setSource] = useState(''), [page, setPage] = useState(0);
   const [period, setPeriod] = useState('30'), [start, setStart] = useState(() => new Date(Date.now() - 29 * 86400000).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })), [end, setEnd] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }));
   const all = data.telemetry?.events || [], retention = data.options.usageRetentionDays;
   const [from, until] = usageDateBounds(period, start, end), invalidRange = !(from < until);
-  const events = all.filter(e => e.at >= from && e.at < until && (!account || e.account === account) && (!route || e.alias === route) && (!outcome || e.outcome === outcome));
+  const events = all.filter(e => e.at >= from && e.at < until && (!account || e.account === account) && (!route || e.alias === route) && (!outcome || e.outcome === outcome) && (!source || (e.source || 'dsh') === source));
   const pages = Math.max(1, Math.ceil(events.length / 50)), current = Math.min(page, pages - 1);
   const accountName = id => data.accounts.find(a => a.id === id)?.name || id;
   const routeName = id => data.routes.find(r => r.id === id)?.name || id;
@@ -288,10 +378,10 @@ export function UsageDetails({ data, busy, act }) {
     <details className="help"><summary>调整明细保留天数（当前 {retention} 天）</summary><div className="stack"><form key={retention} className="row" onSubmit={e => { e.preventDefault(); void act({ action: 'options.save', usageRetentionDays: Number(new FormData(e.currentTarget).get('days')) }); }}><label className="filter">明细保留天数<input name="days" type="number" min="1" max="365" step="1" required disabled={busy} defaultValue={retention} /></label><button type="submit" disabled={busy}>保存保留期限</button></form><p className="notice">默认滚动保留最近 30 天，可设置 1–365 天。缩短期限会删除超期明细，延长不能恢复已删除记录；累计统计、额度轮换和临期冷却不受影响。</p></div></details></section>
     <div className="bar"><div className="row" role="group" aria-label="明细时间范围">{[['1', '今日'], ['3', '近 3 日'], ['7', '近 7 日'], ['30', '近 30 日'], ['all', '全部已保留'], ['custom', '自定义']].map(([value, label]) => <button key={value} aria-pressed={period === value} onClick={() => { setPeriod(value); setPage(0); }}>{label}</button>)}</div><p className="notice">按北京时间自然日筛选</p></div>
     {period === 'custom' && <div className="row"><label className="filter">开始日期（北京时间）<input type="date" value={start} max={end || undefined} required onChange={e => { setStart(e.target.value); setPage(0); }} /></label><label className="filter">结束日期（北京时间）<input type="date" value={end} min={start || undefined} required onChange={e => { setEnd(e.target.value); setPage(0); }} /></label>{invalidRange && <p role="alert" className="error">请选择有效的起止日期，结束日期不能早于开始日期。</p>}</div>}
-    <div className="row"><label className="filter">账号<select value={account} onChange={e => { setAccount(e.target.value); setPage(0); }}><option value="">全部账号</option>{[...new Set(all.map(e => e.account))].map(id => <option key={id} value={id}>{accountName(id)}</option>)}</select></label><label className="filter">路由 / 模型<select value={route} onChange={e => { setRoute(e.target.value); setPage(0); }}><option value="">全部路由 / 模型</option>{[...new Set(all.map(e => e.alias))].map(id => <option key={id} value={id}>{routeName(id)}</option>)}</select></label><label className="filter">结果<select value={outcome} onChange={e => { setOutcome(e.target.value); setPage(0); }}><option value="">全部结果</option><option value="completed">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label></div>
+    <div className="row"><label className="filter">账号<select value={account} onChange={e => { setAccount(e.target.value); setPage(0); }}><option value="">全部账号</option>{[...new Set(all.map(e => e.account))].map(id => <option key={id} value={id}>{accountName(id)}</option>)}</select></label><label className="filter">路由 / 模型<select value={route} onChange={e => { setRoute(e.target.value); setPage(0); }}><option value="">全部路由 / 模型</option>{[...new Set(all.map(e => e.alias))].map(id => <option key={id} value={id}>{routeName(id)}</option>)}</select></label><label className="filter">来源<select value={source} onChange={e => { setSource(e.target.value); setPage(0); }}><option value="">全部来源</option><option value="dsh">DSH 会话</option><option value="api">API 服务</option></select></label><label className="filter">结果<select value={outcome} onChange={e => { setOutcome(e.target.value); setPage(0); }}><option value="">全部结果</option><option value="completed">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label></div>
     <div className="metrics">{metric('筛选内调用', fmt(events.length), '上游尝试次数')}{metric('输入 Token', fmt(total('input')), '已返回的输入分项')}{metric('输出 Token', fmt(total('output')), '已返回的输出分项')}{metric('总 Token', fmt(total('tokens')), '已返回的总量')}</div><p className="notice">数据来自平台返回的 usage。{missing ? fmt(missing) + ' 条缺少输入或输出分项；旧记录不补算。' : '输入、输出为实际返回值。'}缓存输入包含在输入中，推理输出包含在输出中，均不重复相加。未返回的数据以「—」显示。</p>
     <PerformanceMetrics events={events} />
-    <section className="box table-shell"><div className="scroll" role="region" aria-label="请求用量与性能明细" tabIndex="0"><table className="table"><thead><tr><th>时间</th><th>渠道 / 账号</th><th>路由 / 实际模型</th><th>输入</th><th>输出</th><th>总 Token</th><th>性能</th><th>结果</th></tr></thead><tbody>{events.slice(current * 50, (current + 1) * 50).map((e, i) => <tr key={e.at + ':' + current + ':' + i}><td>{when(e.at)}</td><td>{data.providers.find(p => p.id === e.provider)?.name || e.provider}<br /><small>{accountName(e.account)}</small></td><td>{routeName(e.alias)}<br /><small className="mono">{e.model || '未记录实际模型'}</small></td><td>{fmt(e.input)}{e.cachedInput != null && <><br /><small>缓存 {fmt(e.cachedInput)}</small></>}</td><td>{fmt(e.output)}{e.reasoningOutput != null && <><br /><small>推理 {fmt(e.reasoningOutput)}</small></>}</td><td>{fmt(e.tokens)}</td><td><RequestPerformance event={e} /></td><td>{e.outcome === 'completed' ? '成功' : e.outcome === 'cancelled' ? '已取消' : '失败'}<br /><small>{e.status}</small></td></tr>)}</tbody></table>{!events.length && <p className="empty">当前筛选和保留期限内没有请求明细。</p>}</div><div className="bar table-footer"><p className="notice">第 {current + 1} / {pages} 页 · 每页 50 条</p><div className="row"><button disabled={current === 0} onClick={() => setPage(current - 1)}>上一页</button><button disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>下一页</button></div></div></section>
+    <section className="box table-shell"><div className="scroll" role="region" aria-label="请求用量与性能明细" tabIndex="0"><table className="table"><thead><tr><th>时间</th><th>渠道 / 账号</th><th>路由 / 实际模型</th><th>输入</th><th>输出</th><th>总 Token</th><th>性能</th><th>结果</th></tr></thead><tbody>{events.slice(current * 50, (current + 1) * 50).map((e, i) => <tr key={e.at + ':' + current + ':' + i}><td>{when(e.at)}<small className="muted">{e.source === 'api' ? 'API 服务' : 'DSH 会话'}</small></td><td>{data.providers.find(p => p.id === e.provider)?.name || e.provider}<br /><small>{accountName(e.account)}</small></td><td>{routeName(e.alias)}<br /><small className="mono">{e.model || '未记录实际模型'}</small></td><td>{fmt(e.input)}{e.cachedInput != null && <><br /><small>缓存 {fmt(e.cachedInput)}</small></>}</td><td>{fmt(e.output)}{e.reasoningOutput != null && <><br /><small>推理 {fmt(e.reasoningOutput)}</small></>}</td><td>{fmt(e.tokens)}</td><td><RequestPerformance event={e} /></td><td>{e.outcome === 'completed' ? '成功' : e.outcome === 'cancelled' ? '已取消' : '失败'}<br /><small>{e.status}</small></td></tr>)}</tbody></table>{!events.length && <p className="empty">当前筛选和保留期限内没有请求明细。</p>}</div><div className="bar table-footer"><p className="notice">第 {current + 1} / {pages} 页 · 每页 50 条</p><div className="row"><button disabled={current === 0} onClick={() => setPage(current - 1)}>上一页</button><button disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>下一页</button></div></div></section>
   </div>;
 }
 function RequestPerformance({ event: e }) {

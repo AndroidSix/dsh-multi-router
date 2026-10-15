@@ -58,7 +58,7 @@ export class Telemetry {
       outcome: event.ok ? 'completed' : event.cancelled ? 'cancelled' : 'failed', input, output,
       tokens: measured(event.usage?.total_tokens) ?? (input !== null && output !== null ? input + output : null),
       cachedInput: measured(event.usage?.prompt_tokens_details?.cached_tokens), reasoningOutput: measured(event.usage?.completion_tokens_details?.reasoning_tokens),
-      callId: event.callId ?? null, session: event.session ?? null,
+      callId: event.callId ?? null, session: event.session ?? null, source: event.source === 'api' ? 'api' : 'dsh',
       timing: event.timing ? Object.fromEntries(['modelMs', 'ttftMs', 'decodeMs', 'decodeTokens'].map(k => [k, measured(event.timing[k])])) : null, timingSource: event.timing ? 'upstream' : null });
     const dates = Object.keys(this.data.days).sort(); for (const key of dates.slice(0, -31)) delete this.data.days[key];
     return this.persist();

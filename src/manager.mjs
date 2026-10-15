@@ -18,8 +18,10 @@ import { exportConfiguration, decodeConfiguration, migrationSummary, prepareMigr
 import { PluginUpdates } from './plugin-updates.mjs';
 import { Checkins, supportsCheckin } from './checkins.mjs';
 import { WorkBuddyLogin } from './workbuddy-login.mjs';
+import { ApiService } from './api-service.mjs';
 
 export const MANAGEMENT_PATH = '/.well-known/dsh-multi-router';
+export const SUMMARY_PATH = `${MANAGEMENT_PATH}/summary`;
 const revisionOf = raw => createHash('sha256').update(JSON.stringify(raw)).digest('hex');
 export class ManagementError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -53,6 +55,7 @@ export class Manager {
     this.checkins = new Checkins(join(dirname(file), 'checkins.json'), this);
     this.workbuddyLogin = new WorkBuddyLogin(join(dirname(file), 'workbuddy-login.json'), { fetchImpl: pluginAccess.fetchImpl });
     this.setupFile = join(dirname(file), 'initial-setup.json');
+    this.api = new ApiService(join(dirname(file), 'api-service.json'), this);
     router.telemetry = this.telemetry; router.monitor = a => this.monitorAccount(a, { maxAgeMs: 60000 });
     router.prepareFree = () => this.checkFreeModels(true);
     router.freeModels = account => this.freeModels(account);
@@ -75,6 +78,7 @@ export class Manager {
     } catch { /* No saved directory yet; never invent a provider's model roster. */ }
     this.telemetry.configure(this.config.usageRetentionDays);
     await this.telemetry.load();
+    await this.api.load();
     await Promise.all(this.config.accounts.map(a => this.readLogin(a)));
     this.publish();
   }
@@ -308,12 +312,20 @@ export class Manager {
     this.refreshes.set(account.id, promise);
     return promise;
   }
+  summaryState() {
+    const today = new Date(this.telemetry.now()).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    const daily = this.telemetry.data.days[today] ?? {};
+    return { pluginVersion, enabled: this.config.sidebarUsage, today,
+      tokens: daily.tokens ?? 0, requests: daily.requests ?? 0, unmetered: daily.unmetered ?? 0,
+      totalTokens: Object.values(this.telemetry.data.accounts).reduce((sum, row) => sum + (row.tokens ?? 0), 0) };
+  }
   state() {
     const status = this.router.status();
     return { pluginVersion, startup: this.startup, runtime: this.runtime?.state(), revision: this.revision, localDiscovery: this.localDiscovery ?? [], setup: this.setup,
       pluginUpdates: this.plugins.state(),
       checkins: this.checkins.state(),
       telemetry: this.telemetry.state(),
+      apiService: this.api.state(),
       accounts: this.config.accounts.map(a => ({ id: a.id, provider: a.provider, name: a.name ?? a.id,
         enabled: a.enabled !== false, status: status.find(s => s.id === a.id),
         login: this.loginInfo.get(a.id), usage: this.telemetry.row('accounts', a.id),
@@ -326,10 +338,15 @@ export class Manager {
           ? this.config.accounts.some(a => a.enabled !== false && a.provider === t.provider && this.freeModels(a).length)
           : matchModel(id, t, this.providerModels(t.provider))).map(t => t.provider))] })),
       routes: this.routeModels(), options: { cooldownMs: this.config.cooldownMs, requestTimeoutMs: this.config.requestTimeoutMs,
-        retryServerErrors: this.config.retryServerErrors, usageRetentionDays: this.config.usageRetentionDays } };
+        retryServerErrors: this.config.retryServerErrors, usageRetentionDays: this.config.usageRetentionDays, sidebarUsage: this.config.sidebarUsage } };
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (input.action?.startsWith('api.')) {
+      let result;
+      try { result = await this.api.action(input); } catch (e) { bad(e.message); }
+      return { ...this.state(), ...result };
+    }
     if (input.action === 'plugin.reload') { if (!this.runtime) bad('当前后台不支持重新加载'); this.runtime.retryAt = 0; this.runtime.schedule(0); return this.state(); }
     if (input.action === 'workbuddy.sms') {
       try { const workbuddyLogin = await this.workbuddyLogin.send(input.phone); return { ...this.state(), workbuddyLogin }; } catch (e) { bad(e.message); }
@@ -556,7 +573,7 @@ export class Manager {
           if (!input.schedule) bad('请填写签到计划');
           raw.checkinSchedule = input.schedule;
         } else if (input.action === 'options.save') {
-          for (const key of ['cooldownMs', 'requestTimeoutMs', 'retryServerErrors', 'usageRetentionDays']) if (input[key] !== undefined) raw[key] = input[key];
+          for (const key of ['cooldownMs', 'requestTimeoutMs', 'retryServerErrors', 'usageRetentionDays', 'sidebarUsage']) if (input[key] !== undefined) raw[key] = input[key];
         } else bad('未知操作');
         let config;
         try { config = validateConfig(raw, this.file); } catch (error) { bad(error.message); }
@@ -597,7 +614,7 @@ export class Manager {
   }
 }
 
-export function managementHandler(manager) {
+export function managementHandler(manager, { summaryOnly = false } = {}) {
   const key = randomBytes(32).toString('base64url');
   const json = (res, status, value) => {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -610,7 +627,8 @@ export function managementHandler(manager) {
       if (!hostIsLoopback(req.headers.host) || (remote && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote))) throw new ManagementError(403, '仅允许本机请求');
       if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}` && req.headers.origin !== `https://${req.headers.host}`) throw new ManagementError(403, '来源无效');
       if (req.headers['sec-fetch-site'] === 'cross-site') throw new ManagementError(403, '来源无效');
-      if (req.method === 'GET') { json(res, 200, { ...manager.state(), key }); return; }
+      if (req.method === 'GET') { json(res, 200, summaryOnly ? manager.summaryState() : { ...manager.state(), key }); return; }
+      if (summaryOnly) throw new ManagementError(405, '方法无效');
       if (req.method !== 'POST') throw new ManagementError(405, '方法无效');
       const actual = Buffer.from(req.headers['x-multi-router-key'] ?? ''), expected = Buffer.from(key);
       if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new ManagementError(401, '请刷新配置页面');

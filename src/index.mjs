@@ -8,7 +8,7 @@ import { createAccountClient } from './clients.mjs';
 import { SessionMetrics } from './telemetry.mjs';
 import { Router, abortable } from './router.mjs';
 import { createShim } from './shim.mjs';
-import { Manager, managementHandler, MANAGEMENT_PATH } from './manager.mjs';
+import { Manager, managementHandler, MANAGEMENT_PATH, SUMMARY_PATH } from './manager.mjs';
 import { PluginReload } from './plugin-reload.mjs';
 import { version as pluginVersion } from '../package.json';
 
@@ -26,7 +26,7 @@ export async function apply(ctx, options = {}) {
     manager?.checkins.abort.abort();
     manager?.workbuddyLogin.abort.abort();
     for (const release of releases) release();
-    return Promise.all([...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), startup, manager?.localScan, manager?.checkins.flight, manager?.plugins.flight, manager?.plugins.saveQueue.catch(() => {}), manager?.telemetry.queue.catch(() => {})]);
+    return Promise.all([manager?.api.close(), ...shims.map(shim => shim.close()), ...(manager?.refreshes.values() ?? []), ...(manager?.monitorFlights.values() ?? []), startup, manager?.localScan, manager?.checkins.flight, manager?.plugins.flight, manager?.plugins.saveQueue.catch(() => {}), manager?.telemetry.queue.catch(() => {})]);
   });
   const file = resolve(options.configFile ?? process.env.DSH_MULTI_ROUTER_CONFIG ?? defaultConfigFile());
   try {
@@ -42,8 +42,9 @@ export async function apply(ctx, options = {}) {
     if (disposed) return;
     manager.startup = { phase: 'discovering' };
     manager.runtime = new PluginReload({ runningVersion: pluginVersion, service: () => ctx.get('pluginManager'), profile: () => ctx.get('profileContext'), canReload: () => !!ctx.get('hmr'), hmr: () => ctx.get('hmr'),
-      busy: () => !!(manager.localScan || manager.requests || manager.plugins.flight || manager.checkins.flight || manager.workbuddyLogin.flight || manager.workbuddyLogin.pending || manager.refreshes.size || manager.monitorFlights.size || shims.some(s => s.active())) });
+      busy: () => !!(manager.localScan || manager.requests || manager.api.controllers.size || manager.plugins.flight || manager.checkins.flight || manager.workbuddyLogin.flight || manager.workbuddyLogin.pending || manager.refreshes.size || manager.monitorFlights.size || shims.some(s => s.active())) });
     ctx.inject?.(['webServer'], webCtx => {
+      webCtx.effect(() => webCtx.webServer.register({ kind: 'exact', path: SUMMARY_PATH, handler: managementHandler(manager, { summaryOnly: true }) }));
       webCtx.effect(() => webCtx.webServer.register({ kind: 'exact', path: MANAGEMENT_PATH, handler: managementHandler(manager) }));
     });
     const metrics = new SessionMetrics(manager.telemetry);
@@ -94,6 +95,7 @@ export async function apply(ctx, options = {}) {
       releases.push(ctx.llm.registerAdapter([provider], wrapper.adapter));
     }
     stopWatch = manager.watch(() => ctx.logger.warn('multi-router: invalid config change; keeping last valid configuration'));
+    await manager.api.reconcile();
     // Desktop helpers, network probes and inventory scans must not block the
     // settings endpoint or activation. Cached routes are usable immediately.
     startup = (async () => {
@@ -118,7 +120,7 @@ export async function apply(ctx, options = {}) {
     ctx.emit('llm/adapters-updated');
   } catch (error) {
     clearInterval(monitorTimer); stopWatch?.(); manager?.runtime?.stop(); for (const release of releases) release();
-    await Promise.all(shims.map(shim => shim.close()));
+    await Promise.all([manager?.api.close(), ...shims.map(shim => shim.close())]);
     ctx.logger.error('multi-router: initialization failed', error.code ?? error.message);
     throw error;
   }
