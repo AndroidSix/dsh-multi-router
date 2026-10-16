@@ -94,6 +94,9 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   for (const label of ['最大容量 · 1M（默认）', '400K', '图片输入', '关闭思考', '最大输出', '128K', '保存并生效']) assert.ok(settings.includes(label), label);
   assert.match(settings, /option value="" selected=""/);
   assert.ok(!settings.includes('2M'));
+  const routeReasoning = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.RouteReasoningSelect,
+    { draft: { targets: [{ provider: 'workbuddy', modelText: 'model' }], contextWindow: 200000, reasoningEffort: 'off' }, data: { revision: 'test', key: 'test' } }));
+  for (const label of ['默认思考深度', '平台默认', '关闭思考', '会话里手动选择的档位优先', '仅在支持该档位的账号间切换', 'aria-describedby="route-reasoning-help"']) assert.ok(routeReasoning.includes(label), label);
   assert.ok(!pool.includes('其他供应商')); assert.ok(!pool.includes('13800138000'));
   const rangeNow = Date.parse('2026-10-15T00:30:00+08:00');
   assert.deepEqual(Array.from(module.usageDateBounds('1', '', '', rangeNow)), [Date.parse('2026-10-15T00:00:00+08:00'), Date.parse('2026-10-16T00:00:00+08:00')]);

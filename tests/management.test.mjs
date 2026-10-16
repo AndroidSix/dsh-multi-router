@@ -103,6 +103,51 @@ test('chosen reasoning mode restricts account failover without changing the requ
   assert.deepEqual(calls, []);
 });
 
+test('route defaults preview account and context capabilities, persist and migrate without silently lowering effort', async t => {
+  const { manager, router, act, file } = await setup(t);
+  const models = Object.fromEntries(manager.config.accounts.map(a => [a.id, modelInfo({ id: 'real-model',
+    contextWindow: a.id === 'wb1' ? 1000 : 4000, maxTokens: 100,
+    reasoning: { supports: true, supportedEfforts: a.id === 'wb1' ? ['low'] : a.provider === 'trae' ? ['xhigh'] : ['high', 'max'],
+      canDisableThinking: a.id === 'wb1' } })]));
+  const calls = [];
+  router.clients.clear(); router.createClient = async a => ({ models: async () => [models[a.id]],
+    chat: async input => { calls.push({ id: a.id, effort: input.reasoning_effort }); return { ok: true, response: new Response('ok') }; } });
+  for (const a of manager.config.accounts) manager.catalogs.set(a.id, { models: [models[a.id]] });
+  const before = await readFile(file, 'utf8'), revision = manager.revision;
+  const route = { ...manager.config.routes.custom, contextMode: 'maximum', reasoningEffort: 'max' };
+  const preview = r => act({ action: 'route.preview', id: 'custom', route: r });
+  assert.deepEqual((await preview(route)).routePreview.reasoning.supportedEfforts, ['high', 'xhigh', 'max']);
+  assert.deepEqual((await preview({ ...route, contextMode: 'custom', contextWindow: 1000 })).routePreview.reasoning.supportedEfforts, ['off', 'low', 'high', 'xhigh', 'max']);
+  assert.deepEqual((await preview({ ...route, targets: [{ provider: 'workbuddy', account: 'wb1', model: 'real-model' }] })).routePreview.reasoning.supportedEfforts, ['off', 'low']);
+  assert.deepEqual((await preview({ ...route, targets: [{ provider: 'workbuddy', account: 'wb2', model: 'real-model' }] })).routePreview.reasoning.supportedEfforts, ['high', 'max']);
+  assert.equal(await readFile(file, 'utf8'), before); assert.equal(manager.revision, revision); assert.deepEqual(calls, []);
+  await act({ action: 'route.save', id: 'custom', previousId: 'custom', route });
+  assert.equal(JSON.parse(await readFile(file)).routes.custom.reasoningEffort, 'max');
+  assert.equal(manager.routeModels().find(r => r.id === 'custom').reasoningEffort, 'max');
+  await manager.load();
+  for (const [effort, expected] of [[undefined, 'max'], ['xhigh', 'xhigh']]) {
+    calls.length = 0;
+    const result = await router.chat({ model: 'custom', messages: [{ role: 'user', content: 'hi' }], stream: true,
+      ...(effort ? { reasoning_effort: effort } : {}) });
+    await result.response.text();
+    assert.equal(calls[0].effort, expected); assert.equal(calls[0].id, effort ? 'tr1' : 'wb2');
+  }
+  await assert.rejects(act({ action: 'route.save', id: 'custom', previousId: 'custom', route: { ...route, reasoningEffort: 'off' } }), /不支持所选思考深度/);
+  await assert.rejects(act({ action: 'route.save', id: 'custom', previousId: 'custom', route: { ...route, reasoningEffort: 'invented' } }), /reasoningEffort/);
+  const exported = (await act({ action: 'config.export', includeCredentials: false })).exported.document;
+  assert.equal(exported.config.routes.custom.reasoningEffort, 'max');
+  const destination = await setup(t, []);
+  await destination.act({ action: 'config.import', document: JSON.stringify(exported), mode: 'replace' });
+  assert.equal(destination.manager.config.routes.custom.reasoningEffort, 'max');
+  manager.catalogs.clear();
+  await act({ action: 'route.save', id: 'custom', previousId: 'custom', route: { ...route,
+    name: '目录暂缺仍保留默认值', contextWindow: 4000,
+    targets: route.targets.map(({ model, ...target }) => ({ ...target, models: [model] })) } });
+  assert.equal(manager.config.routes.custom.reasoningEffort, 'max');
+  await act({ action: 'route.save', id: 'custom', previousId: 'custom', route: { ...route, reasoningEffort: null } });
+  assert.equal(manager.config.routes.custom.reasoningEffort, null);
+});
+
 test('dynamic free routes keep per-model modes, account rates, stable selections and migration', async t => {
   const { manager, router, act, file } = await setup(t);
   const base = { contextWindow: 10000, maxTokens: 1000, billing: { credits: 'x0' }, reasoning: { supports: true, supportedEfforts: ['low', 'medium', 'high'], canDisableThinking: false } };

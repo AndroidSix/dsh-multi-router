@@ -93,6 +93,7 @@ export function validateConfig(raw, file = resolve('router.json')) {
     if (route.maxTokens > route.contextWindow) throw new Error(`Route ${alias}: maxTokens exceeds contextWindow`);
     if (route.supportsImages !== undefined && typeof route.supportsImages !== 'boolean') throw new Error(`Invalid supportsImages for ${alias}`);
     if (route.visible !== undefined && typeof route.visible !== 'boolean') throw new Error(`Invalid visibility for ${alias}`);
+    if (route.reasoningEffort != null && !REASONING_EFFORTS.includes(route.reasoningEffort)) throw new Error(`Invalid reasoningEffort for ${alias}`);
     if (route.name !== undefined && (!nonempty(route.name) || route.name.length > 200)) throw new Error(`Invalid route name for ${alias}`);
     if (route.freeOnly !== undefined && typeof route.freeOnly !== 'boolean') throw new Error(`Invalid freeOnly for ${alias}`);
     if (route.freeModels !== undefined && (!route.freeOnly || !object(route.freeModels) || Object.entries(route.freeModels).some(([id, p]) =>

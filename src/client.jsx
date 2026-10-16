@@ -529,6 +529,32 @@ function FreeRouteForm({ draft, setDraft, data, act, busy, error, notice }) {
     if (await act({ action: 'route.save', id, previousId, revision, route })) setDraft(null);
   }}><div className="modal-body stack"><Feedback error={error} notice={notice} /><label>管理组名称<input required maxLength={200} disabled={busy} value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} /></label><p className="notice">Free 的模型路由由目录自动维护，无需填写模型 ID。账号启停在「账号与登录」调整。</p><FreeStatus route={data.routes.find(r => r.id === draft.id) || draft} act={act} busy={busy} onUpdate={next => setDraft(d => ({ ...d, revision: next.revision, freeModels: next.routes.find(r => r.id === d.id)?.freeModels }))} /><label className="check"><input type="checkbox" checked={draft.visible !== false} disabled={busy} onChange={e => setDraft(d => ({ ...d, visible: e.target.checked }))} />展示勾选的免费模型</label></div><div className="modal-foot bar"><button type="button" disabled={busy} onClick={async () => { if (await act({ action: 'route.remove', id: draft.id, revision: draft.revision })) setDraft(null); }}>移除免费管理组</button><button className="primary" disabled={busy} type="submit">保存设置</button></div></form>;
 }
+export function RouteReasoningSelect({ draft, setDraft, data, busy }) {
+  const targets = draft.targets.map(t => ({ provider: t.provider, ...(t.account ? { account: t.account } : {}),
+    models: t.modelText.split(',').map(x => x.trim()).filter(Boolean) }));
+  const signature = JSON.stringify({ action: 'route.preview', revision: data.revision,
+    catalogs: data.accounts?.map(a => [a.id, a.enabled, a.fetchedAt]), id: draft.id || 'preview', route: {
+    contextMode: draft.contextMode ?? 'maximum', contextWindow: draft.contextWindow, maxTokens: 1,
+    targets: targets.map(({ models, ...target }) => ({ ...target, ...(models.length ? { models } : {}) })) } });
+  const [preview, setPreview] = useState(null);
+  useEffect(() => {
+    const abort = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(ENDPOINT, { method: 'POST', signal: abort.signal,
+          headers: { 'Content-Type': 'application/json', 'X-Multi-Router-Key': data.key }, body: signature });
+        const next = await readManagementResponse(res);
+        if (!abort.signal.aborted) setPreview({ signature, ...next.routePreview });
+      } catch (e) { if (!abort.signal.aborted) setPreview({ signature, error: e.message }); }
+    }, 250);
+    return () => { clearTimeout(timer); abort.abort(); };
+  }, [signature, data.key]);
+  const pending = preview?.signature !== signature, modes = pending ? [] : preview?.reasoning?.supportedEfforts ?? [];
+  const effort = draft.reasoningEffort ?? '', unavailable = !!effort && !pending && !preview?.error && !modes.includes(effort);
+  return <section className="box stack"><label>默认思考深度<select aria-describedby="route-reasoning-help" disabled={busy || pending || !!preview?.error} value={effort} onChange={e => setDraft(d => ({ ...d, reasoningEffort: e.target.value || null }))}>
+    <option value="">平台默认</option>{effort && !modes.includes(effort) && <option value={effort} disabled>{effortNames[effort] || effort}（{pending ? '核对中' : '当前不可用'}）</option>}{modes.map(e => <option key={e} value={e}>{effortNames[e] || e}</option>)}
+  </select></label><p id="route-reasoning-help" className={preview?.error || unavailable ? 'warn notice' : 'notice'} role="status">{pending ? '正在核对目标模型支持的档位…' : preview?.error || (unavailable ? '原档位当前不可用，请选择其他档位或平台默认。' : !preview?.contextKnown ? '尚未获取目标模型目录，暂时只能使用平台默认。' : !modes.length ? '目标模型未声明可调档位，使用平台默认。' : '仅展示当前目标与上下文容量支持的档位。')}</p><p className="notice">会话里手动选择的档位优先。指定深度后，仅在支持该档位的账号间切换；关闭思考仅在渠道支持时提供。</p></section>;
+}
 function RouteForm({ draft, setDraft, data, act, busy, error, notice }) {
   if (draft.freeOnly) return <FreeRouteForm draft={draft} setDraft={setDraft} data={data} act={act} busy={busy} error={error} notice={notice} />;
   const set = (key, value) => setDraft(d => ({ ...d, [key]: value }));
@@ -539,6 +565,7 @@ function RouteForm({ draft, setDraft, data, act, busy, error, notice }) {
     route.targets = route.targets.map(t => { const models = t.modelText.split(',').map(x => x.trim()).filter(Boolean); return { provider: t.provider, ...(t.account ? { account: t.account } : {}), ...(models.length ? { models } : {}), ...(route.strategy === 'weighted' ? { weight: Number(t.weight) } : {}), ...(route.strategy === 'tokens' ? { tokenBudget: Number(t.tokenBudget) } : {}), ...(route.strategy === 'credits' ? { creditBudget: Number(t.creditBudget) } : {}) }; });
     if (await act({ action: 'route.save', id, previousId, revision, route })) setDraft(null);
   }}><div className="modal-body stack"><Feedback error={error} notice={notice} /><label>路由名称<input required maxLength={200} value={draft.name} disabled={busy} onChange={e => set('name', e.target.value)} placeholder="例如 我的 Flash 自动切换" /></label><p className="notice">名称显示在 DSH 模型列表中，可随时修改，不影响已有会话的路由选择。</p>
+      <RouteReasoningSelect draft={draft} setDraft={setDraft} data={data} busy={busy} />
       <label>账号切换规则<select disabled={busy} value={draft.strategy} onChange={e => set('strategy', e.target.value)}>{Object.entries(strategies).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label><p className="steps">{strategyHelp[draft.strategy]}{['tokens', 'credits'].includes(draft.strategy) && ' 正在输出的回答会完成，额度允许超过最后一次请求的用量。'}</p>
       <div className="box stack"><label className="check"><input type="checkbox" disabled={busy} checked={draft.preferExpiringCredits !== false} onChange={e => set('preferExpiringCredits', e.target.checked)} />优先使用临期积分（默认开启）</label><p className="notice">优先使用仍有余额且更早到期的积分包；优先级高于顺序和权重，仍遵守每轮额度与故障切换。平台未提供有效期或用量数据过期时，按普通规则执行。</p>{draft.preferExpiringCredits !== false && <label>临期范围（天）<input type="number" disabled={busy} min="1" max="365" required value={draft.expiringWithinDays ?? 7} onChange={e => set('expiringWithinDays', Number(e.target.value))} /></label>}</div>
       {draft.preferExpiringCredits !== false && <ExpiryStatus route={data.routes.find(r => r.id === draft.previousId) || draft} busy={busy} act={act} revision={draft.revision} onForce={result => setDraft(d => ({ ...d, revision: result.revision, expiringStatus: result.routes.find(r => r.id === draft.previousId)?.expiringStatus }))} />}

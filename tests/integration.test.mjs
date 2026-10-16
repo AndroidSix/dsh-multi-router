@@ -121,7 +121,7 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
   const freeId = `free_${createHash('sha256').update(JSON.stringify(['free', 'workbuddy', modelId])).digest('hex').slice(0, 24)}`;
   const file = join(dir, 'router.json');
   await writePrivateJson(file, { accounts, routes: { free: { ...ROUTE_PRESETS.free, freeModels: { [freeId]: { reasoningEffort: 'high' } } },
-    custom: { name: '全部档位', contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: false, targets: [{ provider: 'workbuddy', model: modelId }] } } });
+    custom: { name: '全部档位', contextWindow: 200000, maxTokens: 32000, reasoningEffort: 'high', preferExpiringCredits: false, targets: [{ provider: 'workbuddy', model: modelId }] } } });
   const realFetch = globalThis.fetch, wire = [], loopback = [];
   globalThis.fetch = async (url, options) => {
     if (String(url).startsWith('http://127.0.0.1')) {
@@ -152,10 +152,12 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
   const options = { provider: 'multi-router', model: 'custom', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], maxTokens: 16, signal: AbortSignal.timeout(10000) };
   assert.equal((await adapter.resolveModel('multi-router', freeId)).reasoning.defaultEffort, 'high');
   assert.equal((await adapter.prepareCall('multi-router', freeId)).model.reasoning.defaultEffort, 'high');
+  assert.equal((await adapter.resolveModel('multi-router', 'custom')).reasoning.defaultEffort, 'high');
+  assert.equal((await adapter.prepareCall('multi-router', 'custom')).model.reasoning.defaultEffort, 'high');
   const consume = async (extra, prepared) => { const chunks = []; for await (const chunk of (prepared ?? adapter).stream({ ...options, ...extra })) chunks.push(chunk); assert.ok(chunks.some(c => c.type === 'text-delta')); };
   await consume({ reasoningEffort: 'max' }); assert.deepEqual(wire.at(-1), { token: 'Bearer wb2', effort: 'max' });
   await consume({ reasoningEffort: 'off' }); assert.equal(loopback.at(-1), 'off'); assert.deepEqual(wire.at(-1), { token: 'Bearer wb2', effort: undefined });
-  await consume({}); assert.equal(loopback.at(-1), 'default'); assert.equal(wire.at(-1).effort, undefined);
+  await consume({}); assert.equal(loopback.at(-1), 'high'); assert.equal(wire.at(-1).effort, 'high');
   await consume({ model: freeId }); assert.equal(loopback.at(-1), 'high'); assert.equal(wire.at(-1).effort, 'high');
   await consume({ model: freeId, reasoningEffort: 'low' }); assert.deepEqual(wire.at(-1), { token: 'Bearer wb1', effort: 'low' });
   await consume({ reasoningEffort: 'medium' }, await adapter.prepareCall('multi-router', 'custom'));

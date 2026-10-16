@@ -282,8 +282,8 @@ export class Manager {
     return this.providerModels(provider).filter(m => !this.modelVisible(provider, m.id)).map(m => m.id);
   }
   modelVisible(provider, id) { return this.config.models[provider]?.[id]?.visible ?? this.config.modelVisibility[provider] ?? false; }
-  routeModels() {
-    return Object.entries(this.config.routes).sort(([, a], [, b]) => Number(!!b.freeOnly) - Number(!!a.freeOnly)).map(([id, row]) => {
+  routeModels(routes = this.config.routes) {
+    return Object.entries(routes).sort(([, a], [, b]) => Number(!!b.freeOnly) - Number(!!a.freeOnly)).map(([id, row]) => {
       const effectiveTargets = row.freeOnly ? this.freeRoutes(id, row).flatMap(r => r.targets) : row.targets;
       const sources = effectiveTargets.flatMap(target => this.config.accounts.filter(a => a.enabled !== false && a.provider === target.provider
         && (!target.account || target.account === a.id)).flatMap(a => {
@@ -359,6 +359,14 @@ export class Manager {
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (input.action === 'route.preview') {
+      if (input.route?.freeOnly) bad('免费模型请逐项设置推理等级');
+      let config;
+      try { config = validateConfig({ ...this.raw, routes: { [input.id || 'preview']: input.route } }, this.file); }
+      catch { bad('请先选择有效的目标模型与上下文容量'); }
+      const { reasoning, contextKnown } = this.routeModels(config.routes)[0];
+      return { routePreview: { reasoning, contextKnown } };
+    }
     if (input.action === 'model.test') {
       const model = this.providerModels(input.provider).find(m => m.id === input.id);
       if (!model) bad('请先刷新并选择已发现的模型');
@@ -631,6 +639,15 @@ export class Manager {
         } else bad('未知操作');
         let config;
         try { config = validateConfig(raw, this.file); } catch (error) { bad(error.message); }
+        if (input.action === 'route.save' && input.route.reasoningEffort != null) {
+          const previous = this.config.routes[input.previousId], route = config.routes[input.id];
+          const bindings = r => JSON.stringify(r.targets.map(t => ({ provider: t.provider, account: t.account,
+            models: t.models ?? (t.model ? [t.model] : []) })));
+          const unchanged = previous?.reasoningEffort === route.reasoningEffort
+            && bindings(previous) === bindings(route) && previous.contextMode === route.contextMode
+            && (route.contextMode === 'maximum' || previous.contextWindow === route.contextWindow);
+          if (!unchanged && !this.routeModels({ [input.id]: route })[0].reasoning?.supportedEfforts.includes(route.reasoningEffort)) bad('目标模型在当前上下文容量下不支持所选思考深度，请重新选择');
+        }
         await writePrivateJson(this.file, raw);
         staging = undefined; // The new account's files now belong to the committed configuration.
         this.raw = raw; this.config = config;
