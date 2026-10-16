@@ -613,6 +613,7 @@ export class Manager {
           if (['tokens', 'credits'].includes(strategy)) await this.telemetry.advance(input.id, this.router.candidates(input.id), JSON.stringify({ strategy, targets: route.targets }));
         } else if (input.action === 'route.remove') {
           if (!Object.hasOwn(raw.routes, input.id)) bad('路由不存在');
+          if (Object.hasOwn(ROUTE_PRESETS, input.id)) raw.seenRoutePresets = [...new Set([...(raw.seenRoutePresets ?? []), input.id])];
           delete raw.routes[input.id];
         } else if (input.action === 'preset.add') {
           const id = input.id ?? 'deepseek-v4.1-flash';

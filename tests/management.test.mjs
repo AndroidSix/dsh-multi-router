@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createServer, get } from 'node:http';
 import { Manager, managementHandler, modelInfo } from '../lib/manager.js';
 import { Router } from '../src/router.mjs';
-import { validateConfig, writePrivateJson, FLASH_PRESET, ROUTE_PRESETS } from '../src/config.mjs';
+import { validateConfig, writePrivateJson, FLASH_PRESET, ROUTE_PRESETS, ensureConfig } from '../src/config.mjs';
 
 // Node's Windows stat reports writable files as 0666; POSIX owner bits do not apply.
 const privateMode = process.platform === 'win32' ? 0o666 : 0o600;
@@ -267,6 +267,24 @@ test('Hy4 Preview uses the discovered WorkBuddy capacity and modes without unrel
   const result = await router.chat({ model: route.id, stream: true, reasoning_effort: 'high', messages: [{ role: 'user', content: 'hi' }] });
   await result.response.text();
   assert.deepEqual(calls, ['wb1', 'wb2'].map(account => ({ account, model: 'hy4-preview', options: { contextWindow: 960000 } })));
+});
+
+test('explicit preset removal and configuration migration preserve preset history across devices', async t => {
+  const source = await setup(t, []);
+  await source.act({ action: 'preset.add', id: 'hy4-preview' });
+  await source.act({ action: 'route.remove', id: 'hy4-preview' });
+  const exported = (await source.act({ action: 'config.export' })).exported.document;
+  assert.ok(exported.config.seenRoutePresets.includes('hy4-preview'));
+  for (const mode of ['merge', 'replace']) {
+    const destination = await setup(t, []);
+    await writePrivateJson(destination.file, { ...destination.manager.raw, seenRoutePresets: ['qwen3.8-flash'] });
+    await destination.manager.load();
+    await destination.act({ action: 'config.import', mode, document: JSON.stringify(exported) });
+    const config = await ensureConfig(destination.file);
+    assert.ok(!config.routes['hy4-preview'], mode);
+    assert.ok(config.routes['qwen3.8-max']);
+    assert.equal(!!config.routes['qwen3.8-flash'], mode === 'replace');
+  }
 });
 
 test('all three providers import independent private snapshots; account order and enablement are editable', async t => {

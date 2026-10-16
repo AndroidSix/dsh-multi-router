@@ -41,6 +41,21 @@ export const DEFAULT_ROUTES = {
   },
   ...ROUTE_PRESETS,
 };
+// Before preset history existed, these were already shipped. Missing old IDs
+// represent user removals; only subsequently introduced presets are auto-added.
+const LEGACY_ROUTE_PRESETS = ['free', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'glm-5.3',
+  'glm-5.3-flash', 'kimi-k3', 'kimi-k2.8-preview', 'minimax-m2.7'];
+export function upgradeRoutePresets(raw) {
+  const ids = Object.keys(ROUTE_PRESETS);
+  if (ids.every(id => raw.seenRoutePresets?.includes(id))) return raw;
+  const routes = raw.routes ?? DEFAULT_ROUTES;
+  const seen = new Set([...LEGACY_ROUTE_PRESETS, ...(raw.seenRoutePresets ?? []),
+    ...Object.keys(routes).filter(id => Object.hasOwn(ROUTE_PRESETS, id))]);
+  const additions = ids.filter(id => !seen.has(id));
+  return { ...raw, ...(additions.length ? { routes: { ...routes,
+    ...Object.fromEntries(additions.map(id => [id, structuredClone(ROUTE_PRESETS[id])])) } } : {}),
+    seenRoutePresets: [...new Set([...seen, ...ids])] };
+}
 const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const nonempty = x => typeof x === 'string' && x.trim().length > 0;
 const positive = x => Number.isSafeInteger(x) && x > 0;
@@ -122,6 +137,8 @@ export function validateConfig(raw, file = resolve('router.json')) {
   if (raw.retryServerErrors !== undefined && typeof raw.retryServerErrors !== 'boolean') throw new Error('Invalid retryServerErrors');
   if (raw.sidebarUsage !== undefined && typeof raw.sidebarUsage !== 'boolean') throw new Error('侧栏用量开关必须是布尔值');
   if (raw.ignoredLocalAccounts !== undefined && (!Array.isArray(raw.ignoredLocalAccounts) || raw.ignoredLocalAccounts.some(k => typeof k !== 'string' || k.length > 1024))) throw new Error('Invalid ignoredLocalAccounts');
+  if (raw.seenRoutePresets !== undefined && (!Array.isArray(raw.seenRoutePresets) || raw.seenRoutePresets.length > 500
+    || raw.seenRoutePresets.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_.-]{1,128}$/.test(id)))) throw new Error('Invalid seenRoutePresets');
   if (raw.usageRetentionDays !== undefined && (!positive(raw.usageRetentionDays) || raw.usageRetentionDays > 365)) throw new Error('Token 明细保留天数必须为 1–365 的整数');
   const checkinSchedule = raw.checkinSchedule ?? { mode: 'scheduled', time: '10:05' };
   if (!object(checkinSchedule) || !['startup', 'scheduled'].includes(checkinSchedule.mode)
@@ -136,12 +153,21 @@ export async function readConfig(file) {
   return validateConfig(JSON.parse(await readFile(file, 'utf8')), resolve(file));
 }
 export async function ensureConfig(file) {
-  try { return await readConfig(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try {
+    const raw = JSON.parse(await readFile(file, 'utf8')), config = validateConfig(raw, resolve(file));
+    if (upgradeRoutePresets(raw) === raw) return config;
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   return withFileLock(file, async () => {
-    try { return await readConfig(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await writePrivateJson(file, { accounts: [], routes: ROUTE_PRESETS });
-    return readConfig(file);
+    let raw, created = false;
+    try { raw = JSON.parse(await readFile(file, 'utf8')); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      raw = { accounts: [], routes: ROUTE_PRESETS }; created = true;
+    }
+    validateConfig(raw, resolve(file));
+    const next = upgradeRoutePresets(raw), config = validateConfig(next, resolve(file));
+    if (created || next !== raw) await writePrivateJson(file, next);
+    return config;
   }, { waitMs: 30000 });
 }
 export async function writePrivateJson(file, value) {

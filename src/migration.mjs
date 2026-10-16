@@ -9,7 +9,7 @@ const derive = promisify(scrypt);
 const FORMAT = 'dsh-multi-router';
 const MAX_BYTES = 512 * 1024;
 const pick = (value, keys) => Object.fromEntries(keys.filter(k => Object.hasOwn(value ?? {}, k)).map(k => [k, value[k]]));
-const options = ['cooldownMs', 'requestTimeoutMs', 'catalogTtlMs', 'retryServerErrors', 'modelVisibility', 'usageRetentionDays', 'checkinSchedule', 'sidebarUsage'];
+const options = ['cooldownMs', 'requestTimeoutMs', 'catalogTtlMs', 'retryServerErrors', 'modelVisibility', 'usageRetentionDays', 'checkinSchedule', 'sidebarUsage', 'seenRoutePresets'];
 function settings(config) {
   return { ...pick(config, options), models: Object.fromEntries(Object.entries(config.models ?? {}).map(([p, rows]) => [p, Object.fromEntries(Object.entries(rows).map(([id, pref]) => [id, pick(pref, ['name', 'visible', 'contextWindow', 'supportsImages', 'reasoningEffort'])]))])),
     accounts: config.accounts.map(a => pick(a, ['id', 'provider', 'name', 'enabled', 'autoCheckin'])),
@@ -98,6 +98,7 @@ export async function prepareMigration(manager, raw, portable, mode) {
         ...(a.provider.startsWith('trae') ? { identityFile: relative(dirname(manager.file), identityFile) } : {}) });
     }
     const next = mode === 'replace' ? { ...portable.config, accounts: imported } : { ...raw, ...pick(portable.config, options),
+      ...((raw.seenRoutePresets || portable.config.seenRoutePresets) ? { seenRoutePresets: [...new Set([...(raw.seenRoutePresets ?? []), ...(portable.config.seenRoutePresets ?? [])])] } : {}),
       accounts: [...raw.accounts.map(a => imported.find(b => b.id === a.id) ?? a), ...imported.filter(a => !raw.accounts.some(b => b.id === a.id))],
       routes: { ...raw.routes, ...portable.config.routes },
       models: Object.fromEntries([...new Set([...Object.keys(raw.models ?? {}), ...Object.keys(portable.config.models)])].map(p => [p, { ...raw.models?.[p], ...portable.config.models[p] }])) };
