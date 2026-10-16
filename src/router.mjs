@@ -1,6 +1,7 @@
 import { meterResponse } from './telemetry.mjs';
 import { isFreeModel } from './config.mjs';
 import { reasoningModes } from './reasoning.mjs';
+import { contextInfo } from './model-context.mjs';
 export class RouteError extends Error {
   constructor(status, code, attempts = [], hint) {
     super(`${code}${attempts.length ? ': ' + attempts.map(a => `${a.account} HTTP ${a.status}`).join(', ') : ''}${hint ? `（${hint}）` : ''}`);
@@ -93,13 +94,14 @@ export class Router {
   }
   exhaustHint({ alias, route, strategy, candidates, expiryCandidates, attempts }) {
     const kinds = new Set(attempts.map(a => a.kind));
-    const modelOnly = attempts.length > 0 && [...kinds].every(k => ['model_unavailable', 'reasoning_effort_unavailable', 'model_no_longer_free'].includes(k));
+    const modelOnly = attempts.length > 0 && [...kinds].every(k => ['model_unavailable', 'reasoning_effort_unavailable', 'model_no_longer_free', 'context_window_unavailable'].includes(k));
     const cooling = candidates.map(c => this.remainingCooldown(c, alias, route)).filter(ms => ms > 0);
     const soonest = cooling.length ? Math.min(...cooling) : undefined;
     const countdown = soonest === undefined ? undefined : `约 ${Math.max(1, Math.ceil(soonest / 1000))} 秒后可重试`;
     if (!expiryCandidates.length) return route.freeOnly
       ? '该路由当前没有可用的免费模型：可能已恢复收费、限免到期或目录获取失败'
       : '该路由没有可用的账号目标：账号可能已全部禁用，或与目标渠道不匹配';
+    if (kinds.has('context_window_unavailable') && modelOnly) return '候选渠道不支持当前上下文预算，请刷新目录或在模型／路由设置中调低预算；不会截断会话或降级到小容量渠道';
     if (modelOnly) return `已尝试的账号目录中都没有该模型、所选推理档位或免费资格不满足${countdown ? `；其余账号冷却中，${countdown}` : ''}`;
     if (soonest !== undefined && cooling.length >= candidates.length) {
       return attempts.length ? `所有候选账号本次调用均失败并已进入冷却，${countdown}` : `全部账号都在失败冷却中，${countdown}`;
@@ -185,16 +187,18 @@ export class Router {
       try {
         const client = await abortable(this.client(account), signal);
         const catalog = await abortable(client.models(signal), signal);
-        const model = matchModel(alias, target, catalog, effort ?? undefined);
+        const suitable = route.enforceContext ? catalog.filter(m => contextInfo(m).maxContextWindow >= route.contextWindow) : catalog;
+        const model = matchModel(alias, target, suitable, effort ?? undefined);
         if (!model) { attempts.push({ account: account.id, provider: account.provider, status: 404,
-          kind: matchModel(alias, target, catalog) ? 'reasoning_effort_unavailable' : 'model_unavailable' }); continue; }
+          kind: matchModel(alias, target, catalog, effort ?? undefined) ? 'context_window_unavailable'
+            : matchModel(alias, target, catalog) ? 'reasoning_effort_unavailable' : 'model_unavailable' }); continue; }
         if (route.freeOnly && !isFreeModel(model, this.now())) { attempts.push({ account: account.id, provider: account.provider, status: 404, kind: 'model_no_longer_free' }); continue; }
         actualModel = model.id;
         const dedupe = `${account.id}:${model.id}`;
         if (tried.has(dedupe)) continue;
         tried.add(dedupe);
         startedAt = performance.now();
-        result = await abortable(client.chat({ ...input, model: model.id }, signal), signal);
+        result = await abortable(client.chat({ ...input, model: model.id }, signal, { contextWindow: route.contextWindow }), signal);
         signal?.throwIfAborted();
         if (result.ok) {
           this.active.set(alias, key);

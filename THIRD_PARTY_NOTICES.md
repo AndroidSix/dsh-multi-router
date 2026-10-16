@@ -11,6 +11,10 @@
 - 使用或再分发本项目时，你必须**同时**遵守本项目 [`LICENSE`](./LICENSE) 与下列三个上游项目的 MIT 许可要求。
 - 上游项目的维护、更新与可用性不由本项目负责。
 
+## 设计参考（未包含代码）
+
+模型管理交互参考 [dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy) 与 [dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae) 的上下文预算、能力展示和测试反馈设计。本次管理界面与上下文路由逻辑由本项目独立实现，未复制这两个参考项目的新源码；核对的 commit 和差异见 [参考对比](docs/reference-comparison.md)。内置的 Trae 固定版本及其许可仍按下文履行。
+
 ## 本地集成改动 / Local Integration Changes
 
 - WorkBuddy 的共享适配器额外透传集成后 provider 目录中**显式声明**的 Minimal 推理模式；WorkBuddy 原有的模型发现逻辑与 provider 专有的档位词表未作改动。

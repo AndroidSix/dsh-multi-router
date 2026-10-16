@@ -15,9 +15,11 @@ const raw = { accounts: ['wb1', 'wb2', 'tr1', 'qd1'].map((id, i) => ({ id, name:
   provider: ['workbuddy', 'workbuddy', 'trae', 'qoder'][i], credentialFile: join(dir, `${id}.json`) })), routes: DEFAULT_ROUTES };
 await writePrivateJson(file, raw);
 const router = new Router(validateConfig(raw, file), async a => ({ models: async () => [
-  { id: a.provider === 'qoder' ? 'dfmodel' : 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', contextWindow: 200000, maxTokens: 32000 },
-  { creditMultiplier: 0, reasoning: { supports: true, supportedEfforts: ['off', 'low', 'medium', 'high'], canDisableThinking: true }, id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxTokens: 64000 },
-] , checkin: {
+  { id: a.provider === 'qoder' ? 'dfmodel' : 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', contextWindow: 200000, supportedContextWindows: [200000, 500000, 1000000], maxTokens: 128000, supportsImages: true },
+  { creditMultiplier: 0, reasoning: { supports: true, supportedEfforts: ['off', 'low', 'medium', 'high'], canDisableThinking: true }, id: a.provider === 'qoder' ? 'gmodel' : 'glm-5.3', name: 'GLM 5.3', contextWindow: 200000, maxContextWindow: 1000000, maxTokens: 64000 },
+  ...(['trae', 'qoder'].includes(a.provider) ? ['max', 'flash'].map(kind => ({ id: a.provider === 'trae' ? `qwen3.8-${kind}` : kind === 'max' ? 'qmodel_38max' : 'qfmodel', name: `Qwen3.8-${kind === 'max' ? 'Max' : 'Flash'}`, contextWindow: 200000, supportedContextWindows: [200000, 400000, 1000000], maxTokens: 32768, reasoning: { supports: true, supportedEfforts: ['low', 'medium', 'high', 'xhigh'] } })) : []),
+  ...(a.provider === 'workbuddy' ? [{ id: 'hy4-preview', name: 'Hy4 Preview', contextWindow: 960000, maxTokens: 64000, supportsImages: true, reasoning: { supports: true, supportedEfforts: ['high'], onlyReasoning: true } }] : []),
+] , chat: async () => ({ ok: true, response: new Response('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: [DONE]\n\n') }), checkin: {
   identity: async () => ({ account: a.id, ...(a.provider === 'trae' ? { device: 'preview-official-device' } : {}) }),
   claim: async () => a.provider === 'workbuddy' ? { status: 'already-claimed', activity: { streakDays: 3, totalCredits: 150, nextStreakDay: 7, endsAt: Date.parse('2026-12-31T23:59:59+08:00') } } : process.env.DSH_PREVIEW_RETRY === '1' ? { status: a.provider === 'trae' ? 'retryable' : 'no-campaign' }
     : { status: 'claimed', amount: a.provider === 'trae' ? 100 : 50 },

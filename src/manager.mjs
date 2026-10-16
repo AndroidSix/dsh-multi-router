@@ -19,6 +19,7 @@ import { PluginUpdates } from './plugin-updates.mjs';
 import { Checkins, supportsCheckin } from './checkins.mjs';
 import { WorkBuddyLogin } from './workbuddy-login.mjs';
 import { ApiService } from './api-service.mjs';
+import { contextInfo, resolveContext } from './model-context.mjs';
 
 export const MANAGEMENT_PATH = '/.well-known/dsh-multi-router';
 export const SUMMARY_PATH = `${MANAGEMENT_PATH}/summary`;
@@ -33,8 +34,8 @@ export function modelInfo(row) {
     ...(typeof row.billing.credits === 'string' ? { credits: row.billing.credits } : {}) } : undefined;
   const reasoning = row.reasoning?.supported ? { supports: true, supportedEfforts: row.reasoning.supported,
     defaultEffort: row.reasoning.defaultEffort, canDisableThinking: row.reasoning.supported.includes('off') } : row.reasoning;
-  return { id: row.id, name: row.name || row.id, contextWindow: finite(row.contextWindow, 200000),
-    maxTokens: Math.min(finite(row.maxTokens, 32000), finite(row.contextWindow, 200000)),
+  return { id: row.id, name: row.name || row.id, ...contextInfo(row),
+    maxTokens: Math.min(finite(row.maxTokens, 32000), contextInfo(row).maxContextWindow),
     supportsImages: row.supportsImages === true || row.multimodal === true || row.input?.includes('image') === true,
     ...(reasoning ? { reasoning } : {}), ...(billing ? { billing } : {}),
     ...(typeof row.creditMultiplier === 'number' && Number.isFinite(row.creditMultiplier) && row.creditMultiplier >= 0 ? { creditMultiplier: row.creditMultiplier } : {}),
@@ -72,7 +73,7 @@ export class Manager {
       for (const account of this.config.accounts) {
         const item = saved[account.id];
         if (item?.credentialFile === account.credentialFile && Array.isArray(item.models)) {
-          this.catalogs.set(account.id, { ...item, models: item.models.filter(m => typeof m.id === 'string' && m.id.length > 0).map(modelInfo) });
+          this.catalogs.set(account.id, { ...item, ...(item.contextVersion !== 1 ? { fetchedAt: 0 } : {}), models: item.models.filter(m => typeof m.id === 'string' && m.id.length > 0).map(modelInfo) });
         }
       }
     } catch { /* No saved directory yet; never invent a provider's model roster. */ }
@@ -215,22 +216,28 @@ export class Manager {
         const id = `free_${createHash('sha256').update(JSON.stringify([parentId, account.provider, model.id])).digest('hex').slice(0, 24)}`;
         if (!groups.has(id)) groups.set(id, { id, models: [], targets: [], accountNames: [], modelName: model.name, provider: account.provider, modelId: model.id });
         const group = groups.get(id);
-        group.models.push({ model, provider: account.provider });
+        group.models.push({ model, provider: account.provider, accountId: account.id });
         group.targets.push({ provider: account.provider, account: account.id, model: model.id });
         group.accountNames.push(account.name ?? account.id);
       }
     }
     return [...groups.values()].map(({ models, ...group }) => {
-      const preference = row.freeModels?.[group.id] ?? {}, reasoning = routeReasoning(models);
+      const preference = row.freeModels?.[group.id] ?? {};
+      const context = resolveContext(models.map(s => s.model), preference.contextWindow ?? (row.contextMode === 'custom' ? row.contextWindow : null), row.contextWindow);
+      const eligible = models.filter(s => contextInfo(s.model).maxContextWindow >= context.contextWindow);
+      const eligibleAccountIds = eligible.map(s => s.accountId);
+      const reasoning = routeReasoning(eligible);
       const selected = preference.reasoningEffort;
-      return { ...group, parentId, dynamicFree: true, freeOnly: true, strategy: 'failover', preferExpiringCredits: false,
+      return { ...group, ...context, eligibleAccountIds,
+        targets: group.targets.filter(t => eligibleAccountIds.includes(t.account)),
+        accountNames: group.accountNames.filter((_, i) => eligibleAccountIds.includes(models[i].accountId)),
+        enforceContext: true, parentId, dynamicFree: true, freeOnly: true, strategy: 'failover', preferExpiringCredits: false,
         name: `Free · ${group.modelName} · ${PROVIDER_NAMES[group.provider]}`, reasoning,
         ...(selected && reasoning?.supportedEfforts.includes(selected) ? { reasoningEffort: selected } : {}),
         configuredEffort: selected ?? null, effortUnavailable: !!selected && !reasoning?.supportedEfforts.includes(selected),
         visible: row.visible !== false && preference.visible !== false, selected: preference.visible !== false,
-        supportsImages: models.every(({ model }) => model.supportsImages),
-        contextWindow: Math.min(row.contextWindow, ...models.map(({ model }) => model.contextWindow)),
-        maxTokens: Math.min(row.maxTokens, ...models.map(({ model }) => model.maxTokens), ...models.map(({ model }) => model.contextWindow)) };
+        supportsImages: eligible.every(({ model }) => model.supportsImages),
+        maxTokens: Math.min(row.maxTokens, context.contextWindow, ...eligible.map(({ model }) => model.maxTokens)) };
     });
   }
   adapterModels() {
@@ -241,7 +248,7 @@ export class Manager {
   publish() {
     this.telemetry.configure(this.config.usageRetentionDays);
     this.revision = revisionOf(this.raw);
-    const routes = { ...this.config.routes };
+    const routes = Object.fromEntries(this.routeModels().map(row => [row.id, row]));
     for (const model of this.adapterModels().filter(m => m.dynamicFree)) routes[model.id] = model;
     for (const provider of PROVIDERS) for (const model of this.providerModels(provider)) {
       routes[`${provider}::${model.id}`] = { ...model, targets: [{ provider, model: model.id }] };
@@ -253,16 +260,23 @@ export class Manager {
     const rows = new Map();
     for (const account of this.config.accounts.filter(a => a.provider === provider && a.enabled !== false)) {
       for (const model of this.catalogs.get(account.id)?.models ?? []) {
-        const old = rows.get(model.id);
-        // Advertise budgets every candidate account can honour.
-        rows.set(model.id, old ? { ...old, contextWindow: Math.min(old.contextWindow, model.contextWindow),
-          maxTokens: Math.min(old.maxTokens, model.maxTokens), supportsImages: old.supportsImages && model.supportsImages,
-          reasoning: routeReasoning([{ model: old, provider }, { model, provider }]) } : { ...model,
-            ...(reasoningModes(model, provider).length ? { reasoning: routeReasoning([{ model, provider }]) } : {}) });
+        if (!rows.has(model.id)) rows.set(model.id, []);
+        rows.get(model.id).push(model);
       }
     }
-    return [...rows.values()].map(model => ({ ...model,
-      name: this.config.models[provider]?.[model.id]?.name ?? model.name }));
+    return [...rows.values()].map(models => {
+      const model = models[0], preference = this.config.models[provider]?.[model.id] ?? {};
+      const context = resolveContext(models, preference.contextWindow);
+      const eligible = models.filter(m => contextInfo(m).maxContextWindow >= context.contextWindow);
+      const reasoning = routeReasoning(eligible.map(model => ({ model, provider })));
+      const selected = preference.reasoningEffort;
+      return { ...model, ...context, enforceContext: true, name: preference.name ?? model.name, reasoning,
+        supportsImages: preference.supportsImages !== false && eligible.every(m => m.supportsImages),
+        imageCapable: eligible.every(m => m.supportsImages),
+        ...(selected && reasoning?.supportedEfforts.includes(selected) ? { reasoningEffort: selected } : {}),
+        configuredEffort: selected ?? null, effortUnavailable: !!selected && !reasoning?.supportedEfforts.includes(selected),
+        maxTokens: Math.min(context.contextWindow, ...eligible.map(m => m.maxTokens)) };
+    });
   }
   hiddenModels(provider) {
     return this.providerModels(provider).filter(m => !this.modelVisible(provider, m.id)).map(m => m.id);
@@ -276,11 +290,14 @@ export class Manager {
           const catalog = this.catalogs.get(a.id)?.models ?? [];
           const models = target.models ? target.models.map(model => catalog.find(m => m.id === model)).filter(Boolean)
             : [matchModel(id, target, catalog)].filter(Boolean);
-          return models.map(model => ({ model, provider: a.provider }));
+          return models.map(model => ({ model, provider: a.provider, accountId: a.id }));
         }));
-      const models = sources.map(s => s.model), reasoning = routeReasoning(sources);
-      return { ...row, supportsImages: models.length > 0 && models.every(m => m.supportsImages), reasoning,
-        ...(row.freeOnly && models.length ? { contextWindow: Math.min(row.contextWindow, ...models.map(m => m.contextWindow)), maxTokens: Math.min(row.maxTokens, ...models.map(m => m.maxTokens), ...models.map(m => m.contextWindow)) } : {}),
+      const context = resolveContext(sources.map(s => s.model), row.contextMode === 'custom' ? row.contextWindow : null, row.contextWindow);
+      const eligible = sources.filter(s => contextInfo(s.model).maxContextWindow >= context.contextWindow);
+      const models = eligible.map(s => s.model), reasoning = routeReasoning(eligible);
+      return { ...row, ...context, enforceContext: true, supportsImages: models.length > 0 && models.every(m => m.supportsImages), reasoning,
+        eligibleAccountIds: [...new Set(eligible.map(s => s.accountId))],
+        maxTokens: Math.min(row.maxTokens, context.contextWindow, ...models.map(m => m.maxTokens)),
         id, name: row.name ?? id, expiringStatus: { ...this.telemetry.data.expiringRounds[id] },
         ...(row.freeOnly ? { freeStatus: { ...this.freeStatus(row), modelRoutes: this.freeRoutes(id, row) } } : {}) };
     });
@@ -300,7 +317,7 @@ export class Manager {
         const models = (await client.models(AbortSignal.timeout(60000), !!force)).map(modelInfo);
         // A late response may not resurrect an account removed while discovery was running.
         if (this.closed || !this.config.accounts.some(a => a.id === account.id && a.credentialFile === account.credentialFile)) return;
-        this.catalogs.set(account.id, { credentialFile: account.credentialFile, fetchedAt: Date.now(), pricingVersion: 1, models });
+        this.catalogs.set(account.id, { credentialFile: account.credentialFile, fetchedAt: Date.now(), pricingVersion: 1, contextVersion: 1, models });
         this.catalogErrors.delete(account.id);
         await withFileLock(this.catalogFile, () => writePrivateJson(this.catalogFile, Object.fromEntries(this.catalogs)));
       } catch (error) {
@@ -333,7 +350,7 @@ export class Manager {
         fetchedAt: this.catalogs.get(a.id)?.fetchedAt, error: this.catalogErrors.get(a.id) })),
       providers: PROVIDERS.map(id => ({ id, name: PROVIDER_NAMES[id], models: this.providerModels(id).map(m => ({ ...m,
         visible: this.modelVisible(id, m.id) })) })),
-      presets: Object.entries(ROUTE_PRESETS).map(([id, route]) => ({ id, ...structuredClone(route), added: Object.hasOwn(this.config.routes, id),
+      presets: Object.entries(ROUTE_PRESETS).map(([id, route]) => ({ id, ...structuredClone(route), providerCount: route.targets.length, added: Object.hasOwn(this.config.routes, id),
         availableProviders: [...new Set(route.targets.filter(t => route.freeOnly
           ? this.config.accounts.some(a => a.enabled !== false && a.provider === t.provider && this.freeModels(a).length)
           : matchModel(id, t, this.providerModels(t.provider))).map(t => t.provider))] })),
@@ -342,6 +359,36 @@ export class Manager {
   }
   async action(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) bad('请求格式无效');
+    if (input.action === 'model.test') {
+      const model = this.providerModels(input.provider).find(m => m.id === input.id);
+      if (!model) bad('请先刷新并选择已发现的模型');
+      if (this.modelTestFlight || Date.now() - (this.modelTestAt ?? 0) < 10000) bad('请等待当前测试完成，测试间隔至少 10 秒');
+      this.modelTestFlight = true; this.modelTestAt = Date.now(); this.modelTestAbort = new AbortController();
+      const started = performance.now();
+      let modelTest;
+      try {
+        const { response } = await this.router.chat({ model: `${input.provider}::${input.id}`, stream: true,
+          messages: [{ role: 'system', content: 'Answer briefly.' }, { role: 'user', content: 'Reply with OK.' }], max_tokens: 16 },
+          AbortSignal.any([this.modelTestAbort.signal, AbortSignal.timeout(45000)]));
+        const reader = response.body.getReader(); let size = 0, text = ''; const decoder = new TextDecoder();
+        try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.byteLength;
+          if (size > 1024 * 1024) throw Error('probe_response_too_large'); text += decoder.decode(chunk.value, { stream: true }); }
+          text += decoder.decode();
+          let answered = false;
+          for (const line of text.split(/\r?\n/).filter(l => l.startsWith('data:'))) {
+            if (line.slice(5).trim() === '[DONE]') continue;
+            const payload = JSON.parse(line.slice(5));
+            if (payload.error || payload.choices?.some(c => c.finish_reason === 'error')) throw Error('probe_stream_failed');
+            answered ||= payload.choices?.some(c => c.delta?.content || c.delta?.reasoning_content || c.delta?.tool_calls?.length) ?? false;
+          }
+          if (!answered || !/^data:\s*\[DONE\]\s*$/m.test(text)) throw Error('probe_incomplete');
+        } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+        modelTest = { ok: true, elapsedMs: Math.round(performance.now() - started) };
+      } catch (error) { modelTest = { ok: false, status: Number(error.status) || 502,
+        hint: error.hint || '测试未通过，请查看账号状态；不会自动重试。' }; }
+      finally { this.modelTestFlight = false; this.modelTestAbort = undefined; }
+      return { ...this.state(), modelTest };
+    }
     if (input.action?.startsWith('api.')) {
       let result;
       try { result = await this.api.action(input); } catch (e) { bad(e.message); }
@@ -532,16 +579,22 @@ export class Manager {
           }
         } else if (input.action === 'model.update') {
           if (!PROVIDERS.includes(input.provider) || typeof input.id !== 'string' || !input.id || input.id.length > 256) bad('模型无效');
+          const model = this.providerModels(input.provider).find(m => m.id === input.id);
+          if (input.contextWindow != null && (!Number.isSafeInteger(input.contextWindow) || input.contextWindow <= 0 || !model || input.contextWindow > model.maxContextWindow)) bad('上下文预算不能超过该渠道模型的最大容量');
+          if (input.supportsImages === true && !model?.imageCapable) bad('该模型未声明图片输入能力');
+          if (input.reasoningEffort != null && !model?.reasoning?.supportedEfforts.includes(input.reasoningEffort)) bad('此模型不支持所选推理等级');
           raw.models = { ...raw.models, [input.provider]: { ...raw.models?.[input.provider],
             [input.id]: { ...raw.models?.[input.provider]?.[input.id],
-              ...(input.name !== undefined ? { name: input.name } : {}), ...(input.visible !== undefined ? { visible: input.visible } : {}) } } };
+              ...Object.fromEntries(['name', 'visible', 'contextWindow', 'supportsImages', 'reasoningEffort'].filter(k => input[k] !== undefined).map(k => [k, input[k]])) } } };
         } else if (input.action === 'free.model.update') {
           const parent = raw.routes[input.parentId];
           if (!parent?.freeOnly || !this.freeRoutes(input.parentId, this.config.routes[input.parentId]).some(m => m.id === input.id)) bad('免费模型已更新，请刷新页面');
           const model = this.freeRoutes(input.parentId, this.config.routes[input.parentId]).find(m => m.id === input.id);
+          if (input.contextWindow != null && (!Number.isSafeInteger(input.contextWindow) || input.contextWindow <= 0 || input.contextWindow > model.maxContextWindow)) bad('上下文预算不能超过该免费模型的最大容量');
           if (input.reasoningEffort !== undefined && input.reasoningEffort !== null && !model.reasoning?.supportedEfforts.includes(input.reasoningEffort)) bad('此免费模型不支持所选推理等级');
           parent.freeModels = { ...parent.freeModels, [input.id]: { ...parent.freeModels?.[input.id],
             ...(input.visible !== undefined ? { visible: input.visible } : {}),
+            ...(input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
             ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}) } };
         } else if (input.action === 'route.save') {
           if (input.id === undefined || input.id === '') {

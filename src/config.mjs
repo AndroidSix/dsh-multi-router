@@ -8,17 +8,18 @@ export const PROVIDERS = ['workbuddy', 'workbuddy-ai', 'trae', 'trae-global', 'q
 export const PROVIDER_NAMES = { workbuddy: 'WorkBuddy', 'workbuddy-ai': 'WorkBuddy AI', trae: 'Trae CN',
   'trae-global': 'Trae Global', qoder: 'Qoder CN', 'qoder-global': 'Qoder Global' };
 export const FLASH_PRESET = {
-  name: 'DeepSeek V4.1 Flash · 自动路由', contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: true, expiringWithinDays: 7,
+  name: 'DeepSeek V4.1 Flash · 自动路由', contextMode: 'maximum', contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: true, expiringWithinDays: 7,
   targets: ['workbuddy', 'trae', 'qoder'].map(provider => ({ provider, models: provider.startsWith('qoder')
     ? ['dfmodel'] : ['deepseek-v4.1-flash', 'DeepSeek-V4.1-Flash', 'DeepSeek-V4.1-Flash-Official'] })),
 };
 // IDs differ between providers; keep precise model/version bindings, never fuzzy-match variants.
 const sharedPreset = (name, workbuddy, trae, qoder) => ({
-  name: `${name} · 自动路由`, contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: true, expiringWithinDays: 7,
-  targets: [{ provider: 'workbuddy', models: [workbuddy] }, { provider: 'trae', models: Array.isArray(trae) ? trae : [trae] }, { provider: 'qoder', models: [qoder] }],
+  name: `${name} · 自动路由`, contextMode: 'maximum', contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: true, expiringWithinDays: 7,
+  targets: [['workbuddy', workbuddy], ['trae', trae], ['qoder', qoder]]
+    .filter(([, models]) => models).map(([provider, models]) => ({ provider, models: Array.isArray(models) ? models : [models] })),
 });
 export const ROUTE_PRESETS = {
-  free: { name: 'Free · 动态免费模型', freeOnly: true, visible: true, contextWindow: 200000, maxTokens: 32000,
+  free: { name: 'Free · 动态免费模型', freeOnly: true, visible: true, contextMode: 'maximum', contextWindow: 200000, maxTokens: 32000,
     strategy: 'failover', preferExpiringCredits: false, targets: PROVIDERS.map(provider => ({ provider })) },
   'deepseek-v4.1-flash': FLASH_PRESET,
   'deepseek-v4-pro': sharedPreset('DeepSeek V4 Pro', 'deepseek-v4-pro', ['DeepSeek-V4-Pro-Official', 'DeepSeek-V4-Pro'], 'dmodel'),
@@ -27,11 +28,15 @@ export const ROUTE_PRESETS = {
   'kimi-k3': sharedPreset('Kimi-K3', 'kimi-k3-1', 'kimi-k3', 'kmodel_latest'),
   'kimi-k2.8-preview': sharedPreset('Kimi-K2.8-Preview', 'kimi-k2.8-preview', 'kimi-k2.8-preview', 'kmodel'),
   'minimax-m2.7': sharedPreset('MiniMax-M2.7', 'minimax-m2.7', 'minimax-m2.7', 'mmodel'),
+  // WorkBuddy does not advertise these models. Only bind verified Trae/Qoder IDs.
+  'qwen3.8-max': sharedPreset('Qwen3.8-Max', null, 'qwen3.8-max', 'qmodel_38max'),
+  'qwen3.8-flash': sharedPreset('Qwen3.8-Flash', null, 'qwen3.8-flash', 'qfmodel'),
+  'hy4-preview': sharedPreset('Hy4 Preview', 'hy4-preview', null, null),
 };
 export const DEFAULT_ROUTES = {
   free: ROUTE_PRESETS.free,
   'ds4.1f': {
-    name: 'DeepSeek V4.1 Flash · Auto', contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: true, expiringWithinDays: 7,
+    name: 'DeepSeek V4.1 Flash · Auto', contextMode: 'maximum', contextWindow: 200000, maxTokens: 32000, preferExpiringCredits: true, expiringWithinDays: 7,
     targets: PROVIDERS.map(provider => ({ provider })),
   },
   ...ROUTE_PRESETS,
@@ -63,18 +68,22 @@ export function validateConfig(raw, file = resolve('router.json')) {
       ...(account.identityFile ? { identityFile: resolve(dirname(file), account.identityFile) } : {}) };
   });
   if (!object(raw.routes ?? DEFAULT_ROUTES)) throw new Error('Routes must be an object');
-  const routes = Object.fromEntries(Object.entries(raw.routes ?? DEFAULT_ROUTES).map(([id, route]) => [id, { ...route, preferExpiringCredits: route?.preferExpiringCredits ?? !route?.freeOnly, expiringWithinDays: route?.expiringWithinDays ?? 7 }]));
+  const routes = Object.fromEntries(Object.entries(raw.routes ?? DEFAULT_ROUTES).map(([id, route]) => [id, { ...route,
+    contextMode: route?.contextMode ?? (route?.contextWindow === 200000 ? 'maximum' : 'custom'),
+    preferExpiringCredits: route?.preferExpiringCredits ?? !route?.freeOnly, expiringWithinDays: route?.expiringWithinDays ?? 7 }]));
   for (const [alias, route] of Object.entries(routes)) {
     if (!/^[a-zA-Z0-9_.-]{1,128}$/.test(alias) || !object(route) || !Array.isArray(route.targets) || !route.targets.length) throw new Error(`Invalid route ${alias}`);
     for (const key of ['contextWindow', 'maxTokens']) if (!positive(route[key])) throw new Error(`Route ${alias} needs a positive ${key}`);
+    if (!['maximum', 'custom'].includes(route.contextMode)) throw new Error(`Invalid contextMode in ${alias}`);
     if (route.maxTokens > route.contextWindow) throw new Error(`Route ${alias}: maxTokens exceeds contextWindow`);
     if (route.supportsImages !== undefined && typeof route.supportsImages !== 'boolean') throw new Error(`Invalid supportsImages for ${alias}`);
     if (route.visible !== undefined && typeof route.visible !== 'boolean') throw new Error(`Invalid visibility for ${alias}`);
     if (route.name !== undefined && (!nonempty(route.name) || route.name.length > 200)) throw new Error(`Invalid route name for ${alias}`);
     if (route.freeOnly !== undefined && typeof route.freeOnly !== 'boolean') throw new Error(`Invalid freeOnly for ${alias}`);
     if (route.freeModels !== undefined && (!route.freeOnly || !object(route.freeModels) || Object.entries(route.freeModels).some(([id, p]) =>
-      !/^free_[a-f0-9]{24}$/.test(id) || !object(p) || Object.keys(p).some(k => !['visible', 'reasoningEffort'].includes(k))
+      !/^free_[a-f0-9]{24}$/.test(id) || !object(p) || Object.keys(p).some(k => !['visible', 'reasoningEffort', 'contextWindow'].includes(k))
       || (p.visible !== undefined && typeof p.visible !== 'boolean')
+      || (p.contextWindow !== undefined && p.contextWindow !== null && !positive(p.contextWindow))
       || (p.reasoningEffort !== undefined && p.reasoningEffort !== null && !REASONING_EFFORTS.includes(p.reasoningEffort))))) throw new Error('免费模型展示或推理等级设置无效');
     if (route.freeOnly && ((route.strategy && route.strategy !== 'failover') || route.preferExpiringCredits)) throw new Error('Free 路由仅使用免费模型故障切换，不使用积分或额度轮换');
     if (route.preferExpiringCredits !== undefined && typeof route.preferExpiringCredits !== 'boolean') throw new Error(`Invalid expiring credits flag in ${alias}`);
@@ -101,7 +110,10 @@ export function validateConfig(raw, file = resolve('router.json')) {
     for (const [id, preference] of Object.entries(preferences)) {
       if (!nonempty(id) || id.length > 256 || !object(preference)
         || (preference.name !== undefined && (!nonempty(preference.name) || preference.name.length > 200))
-        || (preference.visible !== undefined && typeof preference.visible !== 'boolean')) throw new Error('Invalid model preference');
+        || (preference.visible !== undefined && typeof preference.visible !== 'boolean')
+        || (preference.contextWindow !== undefined && preference.contextWindow !== null && !positive(preference.contextWindow))
+        || (preference.supportsImages !== undefined && typeof preference.supportsImages !== 'boolean')
+        || (preference.reasoningEffort !== undefined && preference.reasoningEffort !== null && !REASONING_EFFORTS.includes(preference.reasoningEffort))) throw new Error('Invalid model preference');
     }
   }
   const modelVisibility = raw.modelVisibility ?? {};

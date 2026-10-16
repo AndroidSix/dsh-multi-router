@@ -86,6 +86,14 @@ test('client bundle loads in the real DSH classic-script module loader and regis
   assert.match(pool, /<table/); assert.match(pool, /scope="col"/); assert.match(pool, /310 积分 3 天内到期/);
   assert.match(pool, /查询失败 · 保留上次余额/); assert.ok(!pool.includes('999 积分 3 天内到期'));
   assert.match(pool, /全选/); assert.match(pool, /全不选/); assert.match(pool, /未入池/); assert.match(pool, /个目录模型/);
+  const model = { id: 'model', contextWindow: 1000000, maxContextWindow: 1000000, defaultContextWindow: 200000,
+    supportedContextWindows: [200000, 400000, 1000000], maxTokens: 128000, imageCapable: true,
+    reasoning: { supportedEfforts: ['off', 'low', 'high', 'max'] } };
+  const settings = require('react-dom/server').renderToStaticMarkup(require('react').createElement(module.ModelSettings,
+    { model, draft: { name: 'Model', contextWindow: null, supportsImages: true }, busy: false }));
+  for (const label of ['最大容量 · 1M（默认）', '400K', '图片输入', '关闭思考', '最大输出', '128K', '保存并生效']) assert.ok(settings.includes(label), label);
+  assert.match(settings, /option value="" selected=""/);
+  assert.ok(!settings.includes('2M'));
   assert.ok(!pool.includes('其他供应商')); assert.ok(!pool.includes('13800138000'));
   const rangeNow = Date.parse('2026-10-15T00:30:00+08:00');
   assert.deepEqual(Array.from(module.usageDateBounds('1', '', '', rangeNow)), [Date.parse('2026-10-15T00:00:00+08:00'), Date.parse('2026-10-16T00:00:00+08:00')]);

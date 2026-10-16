@@ -20,6 +20,8 @@ import { readLimitedText } from '../upstream/qoder/src/qoder/transport/request.t
 import { checkinFailure } from './checkins.mjs';
 import { RouteError, abortable } from './router.mjs';
 import { preflightStream } from './stream.mjs';
+import { qoderContextModel } from './model-context.mjs';
+export { qoderContextModel } from './model-context.mjs';
 
 const expiryMs = value => { const n = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value) : Date.parse(value || ''); return Number.isFinite(n) && n > 0 ? n : undefined; };
 export async function jsonCredential(file) {
@@ -137,11 +139,13 @@ export async function createAccountClient(account, config, attachments) {
         packages: buckets.map(p => ({ name: p.name, total: p.total, remaining: p.remaining, unit: p.unit, expiresAt: expiryMs(result.usage?.expiresAt || result.plan?.endDate) })), fetchedAt: Date.now() };
     };
     discover = signal => client.fetchModels(signal);
-    chat = (input, signal) => client.chatStream(JSON.stringify(input), signal);
+    chat = (input, signal, options) => new QoderUpstreamClient({ region, providerId: account.provider, getPat, transport,
+      ...(attachments ? { attachments } : {}), catalogProvider: id => qoderContextModel(client.catalogModelFor(id), options?.contextWindow) })
+      .chatStream(JSON.stringify(input), signal);
   }
   return { models: cachedModels(discover, config.catalogTtlMs), accountInfo, checkin,
-    async chat(input, signal) {
-      const result = await chat(input, signal);
+    async chat(input, signal, options) {
+      const result = await chat(input, signal, options);
       return result.ok ? preflightStream(result.response, signal) : result;
     } };
 }

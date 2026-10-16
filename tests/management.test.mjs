@@ -220,7 +220,7 @@ test('all shared presets use explicit real IDs, fail over across providers and n
   router.clients.clear(); router.createClient = async a => ({
     models: async () => Object.values(ROUTE_PRESETS).filter(r => !r.freeOnly).flatMap(r => r.targets.filter(t => t.provider === a.provider).flatMap(t => t.models.map(id => ({ id, name: id, contextWindow: 200000, maxTokens: 32000,
       reasoning: a.provider === 'trae' ? { supported: ['low', 'high', 'xhigh'] } : a.provider === 'qoder' ? { supports: true, supportedEfforts: ['high', 'max'] } : { supports: true } })))),
-    chat: async input => { calls.push({ provider: a.provider, model: input.model }); return a.provider === 'qoder' ? { ok: true, response: new Response('answer') } : { ok: false, status: 429 }; },
+    chat: async input => { calls.push({ provider: a.provider, model: input.model }); return a.provider === 'qoder' || (input.model === 'hy4-preview' && a.id === 'wb2') ? { ok: true, response: new Response('answer') } : { ok: false, status: 429 }; },
   });
   await act({ action: 'refresh' });
   await act({ action: 'preset.add', id: 'glm-5.3' });
@@ -229,20 +229,41 @@ test('all shared presets use explicit real IDs, fail over across providers and n
   await act({ action: 'preset.add-all' });
   assert.deepEqual(manager.config.routes['glm-5.3'], custom);
   assert.ok(manager.config.routes.custom);
-  assert.equal(manager.state().presets.length, 8);
+  assert.equal(manager.state().presets.length, 11);
   assert.ok(!manager.config.routes['glm-5.2']);
   await assert.rejects(act({ action: 'preset.add', id: 'glm-5.2' }), /未知预配置/);
-  assert.ok(manager.state().presets.every(p => p.added && (p.freeOnly || p.availableProviders.length === 3)));
+  assert.ok(manager.state().presets.every(p => p.added && (p.freeOnly || p.availableProviders.length === p.targets.length)));
   const ids = Object.keys(manager.config.routes); await act({ action: 'preset.add-all' }); assert.deepEqual(Object.keys(manager.config.routes), ids);
   await assert.rejects(act({ action: 'preset.add', id: 'unknown' }), /未知预配置/);
   for (const [id, preset] of Object.entries(ROUTE_PRESETS).filter(([, p]) => !p.freeOnly)) {
-    assert.deepEqual(manager.routeModels().find(r => r.id === id).reasoning.supportedEfforts, ['low', 'high', 'xhigh', 'max'], id);
+    assert.deepEqual(manager.routeModels().find(r => r.id === id).reasoning?.supportedEfforts, id === 'hy4-preview' ? undefined : ['low', 'high', 'xhigh', 'max'], id);
     calls.length = 0; router.cooldowns.clear();
     const result = await router.chat({ model: id, stream: true, messages: [{ role: 'user', content: 'hi' }] });
-    assert.equal(result.provider, 'qoder'); await result.response.text();
-    assert.deepEqual([...new Set(calls.map(c => c.provider))], ['workbuddy', 'trae', 'qoder']);
+    assert.equal(result.provider, id === 'hy4-preview' ? 'workbuddy' : 'qoder'); await result.response.text();
+    assert.deepEqual([...new Set(calls.map(c => c.provider))], preset.targets.map(t => t.provider));
     assert.ok(calls.every(c => preset.targets.find(t => t.provider === c.provider).models.includes(c.model)));
   }
+});
+
+test('Hy4 Preview uses the discovered WorkBuddy capacity and modes without unrelated providers', async t => {
+  const { manager, router, act } = await setup(t);
+  const calls = [];
+  router.clients.clear(); router.createClient = async a => ({
+    models: async () => a.provider === 'workbuddy' ? [{ id: 'hy4-preview', name: 'Hy4 preview', contextWindow: 960000,
+      maxTokens: 64000, supportsImages: true, reasoning: { supports: true, supportedEfforts: ['high'], onlyReasoning: true } }] : [],
+    chat: async (input, signal, options) => { calls.push({ account: a.id, model: input.model, options });
+      return a.id === 'wb1' ? { ok: false, status: 429 } : { ok: true, response: new Response('answer') }; },
+  });
+  await act({ action: 'refresh' });
+  await act({ action: 'preset.add', id: 'hy4-preview' });
+  const route = manager.routeModels().find(r => r.id === 'hy4-preview');
+  assert.equal(route.contextWindow, 960000);
+  assert.equal(route.supportsImages, true);
+  assert.deepEqual(route.reasoning.supportedEfforts, ['high']);
+  assert.deepEqual(route.targets, [{ provider: 'workbuddy', models: ['hy4-preview'] }]);
+  const result = await router.chat({ model: route.id, stream: true, reasoning_effort: 'high', messages: [{ role: 'user', content: 'hi' }] });
+  await result.response.text();
+  assert.deepEqual(calls, ['wb1', 'wb2'].map(account => ({ account, model: 'hy4-preview', options: { contextWindow: 960000 } })));
 });
 
 test('all three providers import independent private snapshots; account order and enablement are editable', async t => {
@@ -263,6 +284,77 @@ test('all three providers import independent private snapshots; account order an
   await act({ action: 'account.update', id: 'wb', name: '主账号', enabled: false });
   assert.equal(manager.state().accounts.find(a => a.id === 'wb').name, '主账号');
   await act({ action: 'account.remove', id: 'wb' }); assert.equal(manager.config.accounts.length, 5);
+});
+
+test('maximum context propagates through provider, preset, free model, requests and settings migration', async t => {
+  const { manager, router, act } = await setup(t);
+  const calls = [], models = {
+    wb1: [{ id: 'deepseek-v4.1-flash', contextWindow: 200000, supportedContextWindows: [200000, 500000, 1000000], maxTokens: 128000, supportsImages: true, creditMultiplier: 0 }],
+    wb2: [{ id: 'deepseek-v4.1-flash', contextWindow: 200000, maxTokens: 32000, supportsImages: true, creditMultiplier: 0 }],
+    tr1: [{ id: 'DeepSeek-V4.1-Flash-Official', contextWindow: 200000, maxContextWindow: 1000000, maxTokens: 64000, reasoning: { supported: ['low', 'high', 'xhigh'] } }],
+    qd1: [{ id: 'dfmodel', contextWindow: 200000, supportedContextWindows: [200000, 1000000], maxTokens: 64000 }],
+  };
+  router.clients.clear(); router.createClient = async account => ({ models: async () => models[account.id],
+    chat: async (input, signal, options) => { calls.push({ id: account.id, input, options }); return { ok: true, response: new Response('data: [DONE]\n\n') }; } });
+  await act({ action: 'refresh' });
+  await act({ action: 'preset.add', id: 'deepseek-v4.1-flash' });
+  await act({ action: 'preset.add', id: 'free' });
+  assert.equal(manager.providerModels('workbuddy')[0].contextWindow, 1000000);
+  assert.equal(manager.routeModels().find(r => r.id === 'deepseek-v4.1-flash').contextWindow, 1000000);
+  assert.equal(router.config.routes['deepseek-v4.1-flash'].contextWindow, 1000000);
+  const free = manager.freeRoutes('free', manager.config.routes.free)[0];
+  assert.equal(free.contextWindow, 1000000);
+  assert.deepEqual(free.targets.map(t => t.account), ['wb1']);
+  assert.deepEqual(free.accountNames, ['wb1']);
+  const messages = [{ role: 'user', content: 'preserve the full conversation' }];
+  router.cooldowns.set('wb1:*', Date.now() + 60000);
+  const response = await router.chat({ model: 'deepseek-v4.1-flash', messages, stream: true }); await response.response.text();
+  assert.deepEqual(calls.map(c => c.id), ['tr1']); // wb2 is healthy but too small; no silent downgrade.
+  assert.deepEqual(calls[0].input.messages, messages);
+  assert.deepEqual(calls[0].options, { contextWindow: 1000000 });
+  assert.ok(!router.cooldowns.has('wb2:*'));
+  await act({ action: 'model.update', provider: 'workbuddy', id: models.wb1[0].id, contextWindow: 500000, supportsImages: false });
+  assert.equal(manager.providerModels('workbuddy')[0].contextWindow, 500000);
+  assert.equal(router.config.routes['workbuddy::deepseek-v4.1-flash'].contextWindow, 500000);
+  assert.equal(manager.providerModels('workbuddy')[0].supportsImages, false);
+  assert.equal(router.config.routes['deepseek-v4.1-flash'].contextWindow, 1000000); // Route budgets are independent.
+  await assert.rejects(act({ action: 'model.update', provider: 'workbuddy', id: models.wb1[0].id, contextWindow: 1000001 }), /最大容量/);
+  await act({ action: 'free.model.update', parentId: 'free', id: free.id, contextWindow: 200000 });
+  assert.equal(manager.freeRoutes('free', manager.config.routes.free)[0].contextWindow, 200000);
+  assert.deepEqual(manager.freeRoutes('free', manager.config.routes.free)[0].targets.map(t => t.account), ['wb1', 'wb2']);
+  const exported = (await act({ action: 'config.export' })).exported.document;
+  assert.equal(exported.config.models.workbuddy['deepseek-v4.1-flash'].contextWindow, 500000);
+  assert.equal(exported.config.models.workbuddy['deepseek-v4.1-flash'].supportsImages, false);
+  assert.equal(exported.config.routes['deepseek-v4.1-flash'].contextMode, 'maximum');
+  assert.equal(exported.config.routes.free.freeModels[free.id].contextWindow, 200000);
+  await act({ action: 'model.update', provider: 'workbuddy', id: models.wb1[0].id, contextWindow: null });
+  assert.equal(manager.providerModels('workbuddy')[0].contextWindow, 1000000);
+});
+
+test('legacy 200K defaults migrate to maximum while explicit custom budgets survive', () => {
+  const route = { contextWindow: 200000, maxTokens: 32000, targets: [{ provider: 'trae', model: 'model' }] };
+  assert.equal(validateConfig({ accounts: [], routes: { old: route } }).routes.old.contextMode, 'maximum');
+  assert.equal(validateConfig({ accounts: [], routes: { old: { ...route, contextMode: 'custom' } } }).routes.old.contextMode, 'custom');
+  assert.equal(validateConfig({ accounts: [], routes: { old: { ...route, contextWindow: 300000 } } }).routes.old.contextMode, 'custom');
+});
+
+test('model tests are explicit, bounded and never turn an empty, partial or error stream into success', async t => {
+  const { manager, router, act } = await setup(t);
+  let count = 0, body = 'data: {"choices":[{"delta":{"content":"private probe answer"}}]}\n\ndata: [DONE]\n\n';
+  router.clients.clear(); router.createClient = async () => ({ models: async () => [{ id: 'real-model', contextWindow: 2000, maxTokens: 100 }],
+    chat: async input => { count++; assert.equal(input.max_tokens, 16); assert.equal(input.messages[0].role, 'system'); return { ok: true, response: new Response(body) }; } });
+  await act({ action: 'refresh' }); manager.state(); assert.equal(count, 0);
+  const result = await act({ action: 'model.test', provider: 'workbuddy', id: 'real-model' });
+  assert.equal(result.modelTest.ok, true); assert.ok(result.modelTest.elapsedMs >= 0);
+  assert.doesNotMatch(JSON.stringify(result), /private probe answer/);
+  await assert.rejects(act({ action: 'model.test', provider: 'workbuddy', id: 'real-model' }), /10 秒/);
+  for (const suffix of ['', 'data: {"error":{"message":"private upstream failure"}}\n\ndata: [DONE]\n\n']) {
+    manager.modelTestAt = 0;
+    body = 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n' + suffix;
+    const failed = await act({ action: 'model.test', provider: 'workbuddy', id: 'real-model' });
+    assert.equal(failed.modelTest.ok, false); assert.doesNotMatch(JSON.stringify(failed), /private upstream failure|partial/);
+  }
+  assert.equal(manager.modelTestFlight, false);
 });
 
 test('sidebar summary defaults on, persists its toggle and returns only cached aggregate counters', async t => {
