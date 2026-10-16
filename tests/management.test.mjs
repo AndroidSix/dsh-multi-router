@@ -8,6 +8,9 @@ import { Manager, managementHandler, modelInfo } from '../lib/manager.js';
 import { Router } from '../src/router.mjs';
 import { validateConfig, writePrivateJson, FLASH_PRESET, ROUTE_PRESETS } from '../src/config.mjs';
 
+// Node's Windows stat reports writable files as 0666; POSIX owner bits do not apply.
+const privateMode = process.platform === 'win32' ? 0o666 : 0o600;
+
 async function setup(t, accounts = ['wb1', 'wb2', 'tr1', 'qd1'].map((id, i) => ({ id,
   provider: ['workbuddy', 'workbuddy', 'trae', 'qoder'][i], credentialFile: `accounts/${id}.json` }))) {
   const dir = await mkdtemp(join(tmpdir(), 'router-management-')); t.after(async () => { manager.closed = true; await Promise.all([...manager.refreshes.values(), ...manager.monitorFlights.values()]); await manager.telemetry.queue.catch(() => {}); await rm(dir, { recursive: true, force: true }); });
@@ -277,7 +280,7 @@ test('all three providers import independent private snapshots; account order an
   for (const id of ['qa', 'qb']) await act({ action: 'account.add', id, provider: 'qoder', pat: id + '-secret' });
   assert.equal(manager.config.accounts.length, 6);
   assert.equal(new Set(manager.config.accounts.map(a => a.credentialFile)).size, 6);
-  for (const a of manager.config.accounts) assert.equal((await stat(a.credentialFile)).mode & 0o777, 0o600);
+  for (const a of manager.config.accounts) assert.equal((await stat(a.credentialFile)).mode & 0o777, privateMode);
   const state = JSON.stringify(manager.state()); assert.doesNotMatch(state, /wb-secret|trae-secret|qa-secret|qb-secret|privateKey|credentialFile/);
   await act({ action: 'account.move', id: 'wb', direction: -1 });
   assert.deepEqual(manager.config.accounts.filter(a => a.provider === 'workbuddy').map(a => a.id), ['wb', 'wa']);
@@ -434,7 +437,7 @@ test('single-account credential extraction round-trips all regions, includes Tra
     await destination.act({ action: 'account.add', id, provider, name: exported.document.name, document: exported.document });
     const restored = destination.manager.config.accounts.find(a => a.id === id), credential = JSON.parse(await readFile(restored.credentialFile, 'utf8'));
     assert.equal(credential.pat ?? credential.credential.accessToken, `secret-${id}`);
-    assert.equal((await stat(restored.credentialFile)).mode & 0o777, 0o600);
+    assert.equal((await stat(restored.credentialFile)).mode & 0o777, privateMode);
     if (identityDocument) assert.deepEqual(JSON.parse(await readFile(restored.identityFile, 'utf8')), exported.document.identity);
     await assert.rejects(destination.act({ action: 'account.add', id: `wrong_${id}`, provider: provider === 'qoder' ? 'workbuddy' : 'qoder', document: exported.document }), /凭证格式无效/);
     assert.doesNotMatch(JSON.stringify(source.manager.state()), /secret-|refresh-|accessToken|privateKey/);
@@ -502,7 +505,7 @@ test('portable encrypted migration restores all providers without source paths, 
   await destination.act({ action: 'config.import', document, password, mode: 'replace' });
   assert.equal(destination.manager.config.accounts.length, 3); assert.equal(destination.manager.config.models.qoder['real-model'].visible, false);
   assert.ok((await readdir(destination.dir)).some(n => n.includes('before-import')));
-  for (const a of destination.manager.config.accounts) { assert.ok(a.credentialFile.startsWith(destination.dir)); assert.equal((await stat(a.credentialFile)).mode & 0o777, 0o600); }
+  for (const a of destination.manager.config.accounts) { assert.ok(a.credentialFile.startsWith(destination.dir)); assert.equal((await stat(a.credentialFile)).mode & 0o777, privateMode); }
   assert.equal(JSON.parse(await readFile(destination.manager.config.accounts[1].identityFile, 'utf8')).deviceId, 'device');
   assert.doesNotMatch(JSON.stringify(destination.manager.state()), /migration-wb-secret|migration-tr-secret|migration-q-secret|accessToken|credentialFile/);
   const restored = new Manager(destination.file, destination.router); await restored.load(); assert.equal(restored.config.accounts.length, 3);
