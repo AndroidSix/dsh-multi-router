@@ -2,6 +2,12 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。版本号从 `0.1` 起以功能迭代为主，接口在 `1.0` 前可能变化。
 
+## 0.6.6
+
+- 修复 WorkBuddy 国际版（`workbuddy-ai` / `www.workbuddy.ai`）聊天请求固定返回 HTTP 400 空响应：网关要求请求携带 `X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID` 三件套，每个请求使用新的 UUID。国内版实测同样接受该三件套，因此两个区域统一发送，避免两条路径漂移。感谢 @YGtemple 提供的诊断与实测数据（#2）。
+- 集成测试新增该三件套的逐请求断言；此前仓库内没有任何 `X-Conversation` 覆盖，改动失效时不会有测试报警。
+- 该实现对应上游 `dsh-workbuddy-connect` 新增的 `conversationHeaders()`，本项目固定的 `v0.7.3`（`caad7a94`）尚不含此实现，改动已在 `THIRD_PARTY_NOTICES.md` 的本地集成改动中登记；升级 `upstream-lock.json` 时应删除该本地改动。
+
 ## 0.6.5
 
 - 修复在 DSH 0.2.1-rc.2 上被判定为不兼容、无法启用的问题：五个 DSH peer 包由精确 `0.2.0-rc.2` 改为 `^0.2.0-rc.2`，同时兼容 0.2.0-rc.2 与 0.2.1-rc.2，不再需要版本豁免。
