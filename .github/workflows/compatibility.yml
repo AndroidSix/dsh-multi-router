@@ -27,7 +27,7 @@ jobs:
       - name: Install official DSH modules into an isolated test runtime
         shell: bash
         run: |
-          npm install --prefix "$RUNNER_TEMP/dsh-runtime" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh-app-boot@0.2.0-rc.2 @deepseek-ai/dsh-client-modules@0.2.0-rc.2 @deepseek-ai/dsh-hmr@0.2.0-rc.2 @deepseek-ai/dsh-plugin-manager@0.2.0-rc.2 @deepseek-ai/dsh-client-ui-slots@0.2.0-rc.2
+          npm install --prefix "$RUNNER_TEMP/dsh-runtime" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh-app-boot@0.2.1-rc.2 @deepseek-ai/dsh-client-modules@0.2.1-rc.2 @deepseek-ai/dsh-hmr@0.2.1-rc.2 @deepseek-ai/dsh-plugin-manager@0.2.1-rc.2 @deepseek-ai/dsh-client-ui-slots@0.2.1-rc.2
           node --input-type=module -e "import{appendFileSync}from'node:fs';import{join}from'node:path';appendFileSync(process.env.GITHUB_ENV,'DSH_RUNTIME='+join(process.env.RUNNER_TEMP,'dsh-runtime')+'\n')"
       - name: Verify actual loader, UI slots, CRLF entries and continuous reload
         run: node --test tests/plugin-reload.test.mjs tests/client-runtime.test.mjs tests/startup.test.mjs tests/local-discovery.test.mjs tests/plugin-updates.test.mjs tests/api-service.test.mjs tests/config.test.mjs tests/context-window.test.mjs tests/management.test.mjs

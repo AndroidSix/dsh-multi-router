@@ -1,6 +1,14 @@
 /**
- * Confirm the pi-ai copy this plugin actually loaded is the generation the DSH
- * 0.2.0-rc.2 host was built against.
+ * Confirm the pi-ai copy this plugin actually loaded is the generation this
+ * plugin builds its provider and model descriptors with.
+ *
+ * The host's own copy moves independently: DSH 0.2.1-rc.2 ships pi-ai 1.1.0,
+ * while this plugin keeps 0.87.1. That pairing is deliberate and measured —
+ * 1.1.0's `Models` container drives a 0.87.1 provider through
+ * `provider.streamSimple`, and a 1.1.0-normalized context plus an
+ * 0.87.1-decoded SSE both come back with the right text, usage, and stop
+ * reason. Upgrading this pin is a separate change with its own verification;
+ * sharing the host's copy is not one.
  *
  * #92's failure mode: a pnpm profile with `nodeLinker: hoisted` and
  * `autoInstallPeers: false` installs no peer for us, so a co-installed

@@ -14,7 +14,7 @@ async function fixture(t, overrides = {}) {
   await writePrivateJson(join(dir, 'package.json'), { dependencies: deps, dsh: { profile: { bundles: Object.keys(deps) } } });
   await writePrivateJson(join(dir, 'package-lock.json'), { packages: { 'node_modules/dsh-multi-router': { resolved: `git+https://github.com/owner/router.git#${sha}` }, 'node_modules/pinned-plugin': { resolved: `git+https://github.com/owner/pinned.git#${sha}` } } });
   const bundles = Object.keys(deps).map(name => ({ name, installed: true, removable: true, enabled: name !== 'disabled-plugin', version: '1.0.0' }));
-  bundles.push({ name: '@deepseek-ai/dsh-base', installed: false, removable: false, enabled: true, version: '0.2.0-rc.2' });
+  bundles.push({ name: '@deepseek-ai/dsh-base', installed: false, removable: false, enabled: true, version: '0.2.1-rc.2' });
   const calls = [];
   const service = { listBundles: async () => bundles, installBundle: async (spec, opts) => {
     calls.push({ spec, opts });

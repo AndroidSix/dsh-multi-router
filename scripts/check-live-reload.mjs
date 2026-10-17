@@ -7,9 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { outsideActivation } from '../src/plugin-reload.mjs';
 const runtime = process.env.DSH_RUNTIME ?? '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh';
-const { boot, loadProfileDirectory, readProfilePatches } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`).href);
+const { boot, loadProfileDirectory, readProfilePatches, recomposeProfile } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`).href);
 const { ClientModuleRegistry } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js`).href);
-const { default: Hmr } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-hmr/lib/index.js`).href);
 const { PluginManager } = await import(pathToFileURL(`${runtime}/node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js`).href);
 const dir = await mkdtemp(join(tmpdir(), 'dsh-live-reload-'));
 let ctx;
@@ -39,8 +38,33 @@ try {
   const service = Object.create(PluginManager.prototype);
   Object.assign(service, { profile, ownerContext: ctx, managementBundles: new Set(), abort: new AbortController(), lockWaitMs: 1000 });
   Object.defineProperty(service, 'ctx', { value: ctx });
-  // The real reload transaction is used; the fixture needs no file watcher.
-  const hmr = Object.assign(Object.create(Hmr.prototype), { executing: new AsyncLocalStorage(), operations: Promise.resolve(), closing: false });
+  // The reload transaction is real: PluginManager drives app-boot's recomposeProfile,
+  // which is exactly what replaces the host and browser generations in place. Only the
+  // module-comparison layer is left out — it needs HMR's own file watcher and module
+  // cache bookkeeping, which this fixture does not install. `runExclusive` mirrors
+  // HMR's non-nesting rule so the inherited-activation case below stays meaningful.
+  const hmr = {
+    executing: new AsyncLocalStorage(),
+    operations: Promise.resolve(),
+    closing: false,
+    ownerContext: ctx,
+    runExclusive(operation) {
+      if (this.executing.getStore()) return Promise.reject(new Error('HMR transactions cannot be nested'));
+      const task = this.operations.then(async () => {
+        if (this.closing) throw new Error('HMR is disposed');
+        return this.executing.run(true, operation);
+      });
+      this.operations = task.catch(() => {});
+      return task;
+    },
+    async reconcileProfile(requiredIds = []) {
+      const patches = readProfilePatches('dsh', profile);
+      const running = [...ctx.loader.entries()].filter(entry => entry.fiber?.state === 2);
+      const result = await recomposeProfile(ctx.root, patches, 'dsh', { requiredIds, running });
+      return { warnings: result.warnings, pending: [],
+        ...result.restartReason === undefined ? {} : { restartReason: result.restartReason } };
+    },
+  };
   ctx.provide('hmr', hmr);
   await generation('1.0.1');
   const result = await service.setBundleEnabled('dsh-multi-router', true);
