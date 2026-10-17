@@ -122,7 +122,7 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
   const file = join(dir, 'router.json');
   await writePrivateJson(file, { accounts, routes: { free: { ...ROUTE_PRESETS.free, freeModels: { [freeId]: { reasoningEffort: 'high' } } },
     custom: { name: '全部档位', contextWindow: 200000, maxTokens: 32000, reasoningEffort: 'high', preferExpiringCredits: false, targets: [{ provider: 'workbuddy', model: modelId }] } } });
-  const realFetch = globalThis.fetch, wire = [], loopback = [];
+  const realFetch = globalThis.fetch, wire = [], loopback = [], conversation = [];
   globalThis.fetch = async (url, options) => {
     if (String(url).startsWith('http://127.0.0.1')) {
       loopback.push(new Headers(options?.headers).get('x-multi-router-reasoning'));
@@ -134,7 +134,13 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
         supportsReasoning: true, onlyReasoning: false, reasoning: { supportedEfforts: second ? ['medium', 'high', 'max'] : ['low'], canDisableThinking: second } }],
         agents: [{ name: 'cli', models: [modelId] }] } });
     }
-    if (String(url).endsWith('/v2/chat/completions')) { wire.push({ token: options.headers.Authorization, effort: JSON.parse(options.body).reasoning_effort }); return answer(); }
+    if (String(url).endsWith('/v2/chat/completions')) {
+      // The gateway rejects a chat that omits this trio, so every turn must carry
+      // three fresh ids; a shared id would also merge concurrent conversations.
+      const headers = new Headers(options.headers);
+      conversation.push([headers.get('x-conversation-id'), headers.get('x-conversation-request-id'), headers.get('x-conversation-message-id')]);
+      wire.push({ token: options.headers.Authorization, effort: JSON.parse(options.body).reasoning_effort }); return answer();
+    }
     throw new Error('Unexpected endpoint in reasoning test');
   };
   let dispose; const adapters = new Map();
@@ -162,6 +168,10 @@ test('real DSH adapter offers full modes and keeps Default, Off and free default
   await consume({ model: freeId, reasoningEffort: 'low' }); assert.deepEqual(wire.at(-1), { token: 'Bearer wb1', effort: 'low' });
   await consume({ reasoningEffort: 'medium' }, await adapter.prepareCall('multi-router', 'custom'));
   assert.deepEqual(wire.at(-1), { token: 'Bearer wb2', effort: 'medium' });
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  assert.equal(conversation.length, wire.length);
+  for (const turn of conversation) for (const id of turn) assert.match(id ?? '', uuid);
+  assert.equal(new Set(conversation.map(turn => turn[0])).size, conversation.length);
   wire.length = 0; loopback.length = 0;
   await Promise.all([consume({ reasoningEffort: 'low' }), consume({ reasoningEffort: 'high' })]);
   assert.deepEqual([...loopback].sort(), ['high', 'low']);

@@ -18,6 +18,7 @@
 ## 本地集成改动 / Local Integration Changes
 
 - WorkBuddy 的共享适配器额外透传集成后 provider 目录中**显式声明**的 Minimal 推理模式；WorkBuddy 原有的模型发现逻辑与 provider 专有的档位词表未作改动。
+- WorkBuddy 的 chat / probe 请求补回 `X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID` 三件套（每请求新 UUID，两个区域都发送），否则国际版网关对完整 chat 请求返回 400。此处对应上游 `dsh-workbuddy-connect` 后续版本新增的 `conversationHeaders()`；本项目固定的 `caad7a94`（v0.7.3）尚不含该实现，因此在 vendored 副本上做了等价改动。**升级 `upstream-lock.json` 到含该实现的上游版本时，应删除此处本地改动以免重复。**
 - 三家代码被打包进同一个插件宿主，账号池、路由与用量统计为本项目新增实现。
 
 ---
