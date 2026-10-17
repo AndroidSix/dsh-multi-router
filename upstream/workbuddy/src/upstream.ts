@@ -7,6 +7,7 @@
  * @module dsh-workbuddy-connect/upstream
  */
 
+import { randomUUID } from 'node:crypto'
 import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
 import { chatUserAgent, fallbackChatIdentity, resolveChatIdentity, type ChatIdentity } from './client-identity.ts'
 import type { WorkBuddyCredential } from './auth.ts'
@@ -434,11 +435,31 @@ function commonHeaders(credential: WorkBuddyCredential): Record<string, string> 
 }
 
 /**
+ * Conversation-id triple the upstream gateway requires on chat requests.
+ *
+ * The names come from the official desktop bundle, and a fresh UUID per
+ * request is what the wire measurement supports: the gateway keeps no history
+ * keyed by the id, so the trio marks the channel rather than carrying
+ * conversation state. Fresh ids also keep concurrent requests off one shared
+ * conversation. The CN gateway was measured accepting the same trio, so both
+ * regions carry it and the two paths cannot drift.
+ */
+function conversationHeaders(): Record<string, string> {
+  return {
+    'X-Conversation-ID': randomUUID(),
+    'X-Conversation-Request-ID': randomUUID(),
+    'X-Conversation-Message-ID': randomUUID(),
+  }
+}
+
+/**
  * Chat request headers, including the X-No-* conventions the official CLI uses.
  *
  * `userAgent` and `clientVersion` carry the same resolved desktop identity for
  * chat and probe requests. Refresh shares `commonHeaders` but never this
- * override, so the two paths cannot drift into each other.
+ * override, so the two paths cannot drift into each other. The
+ * `X-Conversation-*` trio rides along too — see {@link conversationHeaders} —
+ * because the international gateway rejects a chat that omits it.
  */
 function chatHeaders(credential: WorkBuddyCredential, userAgent: string, clientVersion: string): Record<string, string> {
   const headers: Record<string, string> = {
@@ -455,6 +476,7 @@ function chatHeaders(credential: WorkBuddyCredential, userAgent: string, clientV
     'X-IDE-Name': 'WorkBuddy',
     'X-IDE-Version': clientVersion,
     'X-Product': 'SaaS',
+    ...conversationHeaders(),
   }
   return headers
 }
